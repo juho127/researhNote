@@ -48,6 +48,7 @@ export const del = (p) => api("DELETE", p);
 
 export async function loadMe(opts = {}) {
   state.me = await api("GET", "/api/me", undefined, opts);
+  state._stageMap = null;
   return state.me;
 }
 
@@ -142,11 +143,23 @@ export const ACTION_LABEL = {
   "membership.set": "소속 변경", "membership.remove": "소속 해제", "token.issue": "토큰 발급", "token.revoke": "토큰 회수",
   "signup.request": "발급 신청", "signup.approve": "신청 승인", "signup.reject": "신청 거절", "signup.claim": "토큰 수령",
   "team.join": "팀 가입", "team.join_request": "팀 가입 요청", "team.join_approve": "가입 승인", "team.join_reject": "가입 거절", "team.leave": "팀 탈퇴",
+  "evaluation.create": "평가 작성", "evaluation.update": "평가 수정", "evaluation.delete": "평가 삭제", "evaluation.respond": "평가 답변",
 };
-export function stages() { return state.me?.stages || []; }
-export function stageLabel(id) { return stages().find((s) => s.id === id)?.label || id; }
-export function stageHint(id) { return stages().find((s) => s.id === id)?.hint || ""; }
-export function stageIndex(id) { return stages().findIndex((s) => s.id === id); }
+/** 트랙 정의 {paper:{label,noun,stages[],rubric[]}, capstone:{...}} */
+export function tracks() { return state.me?.tracks || {}; }
+export function track(id) { return tracks()[id] || tracks().paper || { id: "paper", label: "논문", noun: "논문", stages: state.me?.stages || [], rubric: [] }; }
+export const TRACK_LABEL = { paper: "논문", capstone: "캡스톤" };
+/** 트랙의 단계 목록 (트랙 생략 시 논문) */
+export function stages(trackId) { return track(trackId || "paper").stages || []; }
+function allStageMap() {
+  if (!state._stageMap) { state._stageMap = {}; for (const t of Object.values(tracks())) for (const s of t.stages) state._stageMap[s.id] = { ...s, track: t.id }; }
+  return state._stageMap;
+}
+export function stageLabel(id) { return allStageMap()[id]?.label || (state.me?.stages || []).find((s) => s.id === id)?.label || id; }
+export function stageHint(id) { return allStageMap()[id]?.hint || ""; }
+export function stageMilestone(id) { return allStageMap()[id]?.milestone || ""; }
+export function stageIndex(id, trackId) { const list = trackId ? stages(trackId) : stages(allStageMap()[id]?.track); return list.findIndex((s) => s.id === id); }
+export const ROLE_LABEL = { admin: "관리자", lead: "리드", member: "구성원", evaluator: "평가자" };
 
 export function pill(text, cls = "") { return h("span.pill" + (cls ? "." + cls.split(" ").join(".") : ""), text); }
 export function avatar(name, lg = false) { return h("span.avatar" + (lg ? ".lg" : ""), { title: name }, initials(name)); }
@@ -271,8 +284,8 @@ export function select(options, attrs = {}) {
   for (const o of options) s.append(h("option", { value: o.value, selected: o.value === attrs.value ? true : undefined, disabled: o.disabled }, o.label));
   return s;
 }
-export function stageSelect(value, extra = []) {
-  return select([...extra, ...stages().map((s) => ({ value: s.id, label: `${s.label} · ${s.hint}` }))], { value });
+export function stageSelect(value, extra = [], trackId) {
+  return select([...extra, ...stages(trackId).map((s) => ({ value: s.id, label: `${s.label} · ${s.hint}` }))], { value });
 }
 
 // ---------- 보고서 열기/다운로드 ----------
@@ -308,10 +321,11 @@ export function parseRoute() {
   return { parts, query, path: pathPart };
 }
 export function projectProgress(p) {
-  const total = stages().length || 6;
+  const list = stages(p.track);
+  const total = list.length || 6;
   const bar = h("div.progress");
   for (let i = 0; i < total; i++) {
-    const id = stages()[i]?.id;
+    const id = list[i]?.id;
     const cls = i < p.stage_done ? "done" : id === p.stage ? "doing" : "";
     bar.append(h("i" + (cls ? "." + cls : ""), { title: stageLabel(id) }));
   }

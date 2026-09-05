@@ -25,7 +25,7 @@ export async function render(container, query) {
       add(h("button.btn.primary.sm", { onclick: () => joinDialog(t, container) }, t.join_policy === "open" || me.is_admin ? "가입하기" : "가입 요청"), t.my_request_status === "rejected" ? pill("이전 요청 거절됨", "bad sm") : null);
     }
     return h("div.card.pcard", { style: { minHeight: "200px" } },
-      h("div.row.between.top", h("div.row", { style: { gap: "6px" } }, pill(pl, pc + " sm"), t.my_role ? pill(t.my_role === "lead" ? "리드" : t.my_role === "admin" ? "관리자" : "구성원", "navy sm") : null), h("span.small.muted", t.last_activity_at ? `활동 ${fmtRel(t.last_activity_at)}` : "활동 없음")),
+      h("div.row.between.top", h("div.row", { style: { gap: "6px" } }, pill(t.track === "capstone" ? "캡스톤" : "논문", t.track === "capstone" ? "gold sm" : "sm"), pill(pl, pc + " sm"), t.my_role ? pill(t.my_role === "lead" ? "리드" : t.my_role === "admin" ? "관리자" : t.my_role === "evaluator" ? "평가자" : "구성원", "navy sm") : null), h("span.small.muted", t.last_activity_at ? `활동 ${fmtRel(t.last_activity_at)}` : "활동 없음")),
       h("div.title", t.name),
       t.description ? h("div.small", { style: { color: "#3C4E57" } }, t.description.length > 140 ? t.description.slice(0, 140) + "…" : t.description) : null,
       h("div.row", { style: { gap: "4px", flexWrap: "wrap", marginTop: "4px" } }, members.slice(0, 8).map((n) => avatar(n)), members.length > 8 ? h("span.tiny.muted", `+${members.length - 8}`) : null),

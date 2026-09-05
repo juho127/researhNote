@@ -1,10 +1,10 @@
 import type { AuthContext, Env, Stage } from "../env";
-import { STAGES, STAGE_LABELS, PROJECT_STATUSES, STAGE_STATUSES, isStage } from "../env";
+import { STAGE_LABELS, PROJECT_STATUSES, STAGE_STATUSES, isStageOf, stageIds, stagesOf, trackOf } from "../env";
 import { bad, forbidden, isDateStr, oneOf, str, strLimited, bool, clampInt } from "../lib/http";
 import { newId } from "../lib/id";
 import { nowIso } from "../lib/time";
 import { categoryRole, requireCategoryMember } from "../lib/auth";
-import { ensureStageRows, getProjectForRead, getProjectForWrite, logActivity, touchProject, type ProjectRow } from "../lib/db";
+import { ensureStageRows, getProjectForRead, getProjectForWrite, isCollaborator, logActivity, touchProject, type ProjectRow } from "../lib/db";
 
 export interface ProjectCard extends ProjectRow {
   owner_name: string;
@@ -118,15 +118,19 @@ export interface ProjectDetail extends ProjectCard {
   stages: StageRow[];
   tasks: TaskRow[];
   members: { id: string; name: string; role: string }[];
+  collaborators: { id: string; name: string }[];
   recent_entries: EntryBrief[];
   can_edit: boolean;
   can_review: boolean;
+  can_evaluate: boolean;
+  track_label: string;
+  track_noun: string;
 }
 
 export async function getProjectDetail(env: Env, ctx: AuthContext, id: string): Promise<ProjectDetail> {
   const p = await getProjectForRead(env, ctx, id);
-  await ensureStageRows(env, id);
-  const [cardRs, stagesRs, tasksRs, membersRs, entriesRs] = await env.DB.batch([
+  await ensureStageRows(env, id, p.track);
+  const [cardRs, stagesRs, tasksRs, membersRs, entriesRs, collabRs] = await env.DB.batch([
     env.DB.prepare(`${CARD_SELECT} WHERE p.id = ?`).bind(id),
     env.DB.prepare(`
       SELECT s.stage, s.status, s.summary, s.updated_at, s.updated_by,
@@ -144,21 +148,29 @@ export async function getProjectDetail(env: Env, ctx: AuthContext, id: string): 
         (SELECT COUNT(*) FROM comments c WHERE c.entry_id = e.id) AS comment_count
       FROM entries e JOIN users u ON u.id = e.author_id
       WHERE e.project_id = ? ORDER BY e.date DESC, e.created_at DESC LIMIT 10`).bind(id),
+    env.DB.prepare(`SELECT u.id, u.name FROM project_collaborators c JOIN users u ON u.id = c.user_id WHERE c.project_id = ? AND u.disabled_at IS NULL ORDER BY u.name`).bind(id),
   ]);
   const card = (cardRs.results as ProjectCard[])[0];
   const stageMap = new Map((stagesRs.results as StageRow[]).map((s) => [s.stage, s]));
-  const stages = STAGES.map(
+  const stages = stageIds(p.track).map(
     (s) => stageMap.get(s) ?? { stage: s, status: "todo", summary: "", updated_at: p.created_at, updated_by: null, entry_count: 0 }
   );
   const role = categoryRole(ctx, p.category_id);
+  const collaborators = collabRs.results as ProjectDetail["collaborators"];
+  const isCollab = collaborators.some((c) => c.id === ctx.user.id);
+  const track = trackOf(p.track);
   return {
     ...card,
     stages,
     tasks: tasksRs.results as TaskRow[],
     members: membersRs.results as ProjectDetail["members"],
+    collaborators,
     recent_entries: entriesRs.results as EntryBrief[],
-    can_edit: role === "admin" || role === "lead" || p.owner_id === ctx.user.id,
+    can_edit: role === "admin" || role === "lead" || (!!role && (p.owner_id === ctx.user.id || isCollab)),
     can_review: role === "admin" || role === "lead",
+    can_evaluate: role === "admin" || role === "lead" || role === "evaluator",
+    track_label: track.label,
+    track_noun: track.noun,
   };
 }
 
@@ -193,14 +205,16 @@ function normDeadline(v: unknown): string | null {
 export async function createProject(env: Env, ctx: AuthContext, input: ProjectInput): Promise<ProjectDetail> {
   const categoryId = str(input.category_id, 100);
   if (!categoryId) bad("category_id 가 필요합니다");
-  const cat = await env.DB.prepare(`SELECT id FROM categories WHERE id = ? AND archived_at IS NULL`).bind(categoryId).first();
+  const cat = await env.DB.prepare(`SELECT id, track FROM categories WHERE id = ? AND archived_at IS NULL`).bind(categoryId).first<{ id: string; track: string }>();
   if (!cat) bad("category_id 가 올바르지 않습니다");
+  const track = trackOf(cat.track).id;
   const role = requireCategoryMember(ctx, categoryId);
+  if (role === "evaluator") forbidden("평가자는 프로젝트를 만들 수 없습니다");
   const title = strLimited(input.title, 200, "title");
   if (!title) bad("title 이 필요합니다");
-  let stage: Stage = "planning";
-  if (input.stage !== undefined) {
-    if (!isStage(input.stage)) bad("stage 값이 올바르지 않습니다");
+  let stage: Stage = stageIds(track)[0];
+  if (input.stage !== undefined && input.stage !== null && input.stage !== "") {
+    if (!isStageOf(track, input.stage)) bad(`stage 값이 올바르지 않습니다 (${trackOf(track).label} 트랙: ${stageIds(track).join(", ")})`);
     stage = input.stage;
   }
   const deadline = normDeadline(input.deadline);
@@ -215,13 +229,13 @@ export async function createProject(env: Env, ctx: AuthContext, input: ProjectIn
   const at = nowIso();
   await env.DB
     .prepare(
-      `INSERT INTO projects (id, category_id, owner_id, title, summary, stage, status, target_venue, deadline, tags, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`
+      `INSERT INTO projects (id, category_id, owner_id, title, summary, stage, status, target_venue, deadline, tags, track, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`
     )
-    .bind(id, categoryId, ownerId, title, strLimited(input.summary, 2000, "summary"), stage, str(input.target_venue, 200), deadline, normTags(input.tags), at, at)
+    .bind(id, categoryId, ownerId, title, strLimited(input.summary, 2000, "summary"), stage, str(input.target_venue, 200), deadline, normTags(input.tags), track, at, at)
     .run();
   // 시작 단계(기본 기획)까지의 상태를 흐름 규칙으로 설정: 앞은 완료, 현재는 진행 중, 뒤는 예정
-  await moveCurrentStage(env, ctx, { id, category_id: categoryId, owner_id: ownerId, title, summary: "", stage, status: "active", target_venue: "", deadline, tags: "", created_at: at, updated_at: at }, stage, at);
+  await moveCurrentStage(env, ctx, { id, category_id: categoryId, owner_id: ownerId, title, summary: "", stage, status: "active", target_venue: "", deadline, tags: "", track, created_at: at, updated_at: at }, stage, at);
   await logActivity(env, { actor_id: ctx.user.id, category_id: categoryId, project_id: id, action: "project.create", target_id: id, summary: title, source: ctx.source });
   return getProjectDetail(env, ctx, id);
 }
@@ -247,7 +261,7 @@ export async function updateProject(env: Env, ctx: AuthContext, id: string, inpu
   }
   let moveTo: Stage | null = null;
   if (input.stage !== undefined) {
-    if (!isStage(input.stage)) bad("stage 값이 올바르지 않습니다");
+    if (!isStageOf(p.track, input.stage)) bad(`stage 값이 올바르지 않습니다 (${trackOf(p.track).label} 트랙: ${stageIds(p.track).join(", ")})`);
     if (input.stage !== p.stage) moveTo = input.stage;
   }
   if (input.status !== undefined) {
@@ -285,8 +299,9 @@ export async function updateProject(env: Env, ctx: AuthContext, id: string, inpu
   if (input.category_id !== undefined && str(input.category_id) !== p.category_id) {
     if (!ctx.isAdmin) bad("카테고리 이동은 관리자만 가능합니다");
     const cid = str(input.category_id, 100);
-    const ok = await env.DB.prepare(`SELECT 1 AS x FROM categories WHERE id = ? AND archived_at IS NULL`).bind(cid).first();
-    if (!ok) bad("category_id 가 올바르지 않습니다");
+    const okc = await env.DB.prepare(`SELECT track FROM categories WHERE id = ? AND archived_at IS NULL`).bind(cid).first<{ track: string }>();
+    if (!okc) bad("category_id 가 올바르지 않습니다");
+    if (trackOf(okc.track).id !== trackOf(p.track).id) bad("트랙이 다른 카테고리로는 이동할 수 없습니다 (논문 ↔ 캡스톤)");
     // 소유자(변경 후 소유자 포함)가 새 카테고리 구성원이어야 접근 가능
     const newOwner = input.owner_id !== undefined ? str(input.owner_id, 100) : p.owner_id;
     const ownerOk = await env.DB.prepare(`SELECT 1 AS x FROM memberships WHERE user_id = ? AND category_id = ?`).bind(newOwner, cid).first();
@@ -323,10 +338,11 @@ export async function updateProject(env: Env, ctx: AuthContext, id: string, inpu
  * 현재 단계를 옮기면 모든 단계 상태를 이 규칙으로 다시 계산한다 (정리 내용은 유지).
  */
 async function moveCurrentStage(env: Env, ctx: AuthContext, p: ProjectRow, target: Stage, at: string): Promise<void> {
-  const ti = STAGES.indexOf(target);
-  await ensureStageRows(env, p.id);
+  const ids = stageIds(p.track);
+  const ti = ids.indexOf(target);
+  await ensureStageRows(env, p.id, p.track);
   await env.DB.batch([
-    ...STAGES.map((s, i) =>
+    ...ids.map((s, i) =>
       env.DB.prepare(`UPDATE project_stages SET status = ?, updated_at = ?, updated_by = ? WHERE project_id = ? AND stage = ?`).bind(i < ti ? "done" : i === ti ? "doing" : "todo", at, ctx.user.id, p.id, s)
     ),
     env.DB.prepare(`UPDATE projects SET stage = ?, status = CASE WHEN status = 'done' THEN 'active' ELSE status END, updated_at = ? WHERE id = ?`).bind(target, at, p.id),
@@ -341,24 +357,26 @@ export async function advanceStage(env: Env, ctx: AuthContext, id: string, to?: 
   const p = await getProjectForWrite(env, ctx, id);
   if (p.status === "archived" && !ctx.isAdmin) forbidden("보관된 프로젝트는 진행할 수 없습니다. 먼저 상태를 되돌리세요");
   const at = nowIso();
-  const cur = STAGES.indexOf(p.stage);
+  const ids = stageIds(p.track);
+  const noun = trackOf(p.track).noun;
+  const cur = ids.indexOf(p.stage);
   let summary: string;
   if (to !== undefined && to !== null && to !== "") {
-    if (!isStage(to)) bad("to 값이 올바르지 않습니다");
+    if (!isStageOf(p.track, to)) bad(`to 값이 올바르지 않습니다 (${trackOf(p.track).label} 트랙: ${ids.join(", ")})`);
     if (to === p.stage && p.status !== "done") bad("이미 현재 단계입니다");
     await moveCurrentStage(env, ctx, p, to, at);
-    const ti = STAGES.indexOf(to);
+    const ti = ids.indexOf(to);
     summary = `${STAGE_LABELS[p.stage]} → ${STAGE_LABELS[to]}${ti < cur ? " (되돌리기)" : ""}`;
-  } else if (cur >= STAGES.length - 1) {
-    if (p.status === "done") bad("이미 완료된 논문입니다");
-    await ensureStageRows(env, id);
+  } else if (cur >= ids.length - 1) {
+    if (p.status === "done") bad(`이미 완료된 ${noun}입니다`);
+    await ensureStageRows(env, id, p.track);
     await env.DB.batch([
       env.DB.prepare(`UPDATE project_stages SET status = 'done', updated_at = ?, updated_by = ? WHERE project_id = ?`).bind(at, ctx.user.id, id),
       env.DB.prepare(`UPDATE projects SET status = 'done', updated_at = ? WHERE id = ?`).bind(at, id),
     ]);
-    summary = `${STAGE_LABELS[p.stage]} 완료 → 논문 완료`;
+    summary = `${STAGE_LABELS[p.stage]} 완료 → ${noun} 완료`;
   } else {
-    const next = STAGES[cur + 1];
+    const next = ids[cur + 1];
     await moveCurrentStage(env, ctx, p, next, at);
     summary = `${STAGE_LABELS[p.stage]} 완료 → ${STAGE_LABELS[next]}`;
   }
@@ -379,8 +397,8 @@ export async function updateStage(
 ): Promise<ProjectDetail> {
   const p = await getProjectForWrite(env, ctx, id);
   if (p.status === "archived" && !ctx.isAdmin) forbidden("보관된 프로젝트는 수정할 수 없습니다. 먼저 상태를 되돌리세요");
-  if (!isStage(stage)) bad("stage 값이 올바르지 않습니다");
-  await ensureStageRows(env, id);
+  if (!isStageOf(p.track, stage)) bad(`stage 값이 올바르지 않습니다 (${trackOf(p.track).label} 트랙: ${stageIds(p.track).join(", ")})`);
+  await ensureStageRows(env, id, p.track);
   const at = nowIso();
   let changed = false;
   if (input.summary !== undefined && input.summary !== null) {
@@ -400,10 +418,11 @@ export async function updateStage(
   } else if (status === "done" && stage === p.stage) {
     await advanceStage(env, ctx, id);
     changed = true;
-  } else if (status === "done" && STAGES.indexOf(stage) > STAGES.indexOf(p.stage)) {
+  } else if (status === "done" && stageIds(p.track).indexOf(stage) > stageIds(p.track).indexOf(p.stage)) {
     // 뒤 단계를 완료로 → 그 다음 단계로 건너뛰기
-    const ni = STAGES.indexOf(stage) + 1;
-    if (ni < STAGES.length) await advanceStage(env, ctx, id, STAGES[ni]);
+    const ids = stageIds(p.track);
+    const ni = ids.indexOf(stage) + 1;
+    if (ni < ids.length) await advanceStage(env, ctx, id, ids[ni]);
     else { await advanceStage(env, ctx, id, stage); await advanceStage(env, ctx, id); }
     changed = true;
   }
@@ -420,11 +439,36 @@ export async function archiveProject(env: Env, ctx: AuthContext, id: string): Pr
 /** 카테고리 보드: 단계별 프로젝트 묶음 (칸반) */
 export async function categoryBoard(env: Env, ctx: AuthContext, categoryId: string) {
   requireCategoryMember(ctx, categoryId);
+  const cat = await env.DB.prepare(`SELECT track FROM categories WHERE id = ?`).bind(categoryId).first<{ track: string }>();
+  const track = trackOf(cat?.track);
   const [active, paused, done] = await Promise.all([
     listProjects(env, ctx, { category_id: categoryId, status: "active" }),
     listProjects(env, ctx, { category_id: categoryId, status: "paused" }),
     listProjects(env, ctx, { category_id: categoryId, status: "done", limit: 50 }),
   ]);
-  const columns = STAGES.map((s) => ({ stage: s, projects: active.filter((p) => p.stage === s) }));
-  return { columns, paused, done };
+  const columns = stagesOf(track.id).map((s) => ({ stage: s.id, label: s.label, hint: s.hint, milestone: s.milestone ?? null, projects: active.filter((p) => p.stage === s.id) }));
+  return { track: track.id, track_label: track.label, columns, paused, done };
+}
+
+/** 협업자 설정 (담당자·리드·관리자). 같은 카테고리 구성원만 가능 */
+export async function setCollaborators(env: Env, ctx: AuthContext, id: string, userIds: unknown): Promise<ProjectDetail> {
+  const p = await getProjectForWrite(env, ctx, id);
+  const role = categoryRole(ctx, p.category_id);
+  if (!(role === "admin" || role === "lead" || p.owner_id === ctx.user.id)) forbidden("협업자 설정은 담당자·리드·관리자만 가능합니다");
+  if (!Array.isArray(userIds)) bad("user_ids 배열이 필요합니다");
+  const ids = [...new Set(userIds.map((u) => str(u, 100)).filter((u) => u && u !== p.owner_id))].slice(0, 30);
+  if (ids.length) {
+    const rs = await env.DB.prepare(`SELECT user_id FROM memberships WHERE category_id = ? AND role != 'evaluator' AND user_id IN (${ids.map(() => "?").join(",")})`).bind(p.category_id, ...ids).all<{ user_id: string }>();
+    const ok = new Set((rs.results ?? []).map((r) => r.user_id));
+    const missing = ids.filter((u) => !ok.has(u));
+    if (missing.length) bad(`이 카테고리 구성원(평가자 제외)이 아닙니다: ${missing.join(", ")}`);
+  }
+  const at = nowIso();
+  await env.DB.batch([
+    env.DB.prepare(`DELETE FROM project_collaborators WHERE project_id = ?`).bind(id),
+    ...ids.map((u) => env.DB.prepare(`INSERT INTO project_collaborators (project_id, user_id, added_by, created_at) VALUES (?, ?, ?, ?)`).bind(id, u, ctx.user.id, at)),
+  ]);
+  await touchProject(env, id);
+  await logActivity(env, { actor_id: ctx.user.id, category_id: p.category_id, project_id: id, action: "project.update", target_id: id, summary: `협업자 ${ids.length}명`, source: ctx.source });
+  return getProjectDetail(env, ctx, id);
 }

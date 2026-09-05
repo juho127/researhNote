@@ -95,7 +95,10 @@ http_headers = { Authorization = "Bearer rn_xxx" }
 | `set_review` | `entry_id, status, note?` | 검토 상태 |
 | `team_feed` | `category_id?, limit?` | 팀 활동 |
 | `team_overview` | `category_id` | 구성원·프로젝트·검토 대기 |
-| `list_teams` | – | 팀 로비: 전체 팀·가입 정책·내 상태 |
+| `list_evaluations` | `project_id` | 평가자들의 루브릭 점수·피드백과 팀 답변 (단계별 평균) |
+| `add_evaluation` | `project_id, stage?, title?, scores?, feedback?, visible?` | 평가 작성 (리드·평가자·관리자) |
+| `respond_evaluation` | `evaluation_id, response` | 팀 답변 (담당자·협업자·리드·관리자) |
+| `list_teams` | – | 팀 로비: 전체 팀·트랙·가입 정책·내 상태 |
 | `join_team` | `category_id, message?` | 가입(open) 또는 가입 요청(approval) |
 | `search` | `q, category_id?` | 검색 |
 | `get_report` | `project_id, from?, to?, format?` | 보고서 마크다운 |

@@ -9,6 +9,7 @@ import * as F from "./services/feed";
 import * as R from "./services/report";
 import * as S from "./services/signup";
 import * as TM from "./services/teams";
+import * as EV from "./services/evaluations";
 
 type Handler = (req: Request, env: Env, ctx: AuthContext, params: Record<string, string>, url: URL) => Promise<Response>;
 
@@ -84,6 +85,10 @@ add("DELETE", "/api/projects/:id", async (_r, env, ctx, p) => {
   return json({ ok: true });
 });
 add("PUT", "/api/projects/:id/stages/:stage", async (req, env, ctx, p) => json(await P.updateStage(env, ctx, p.id, p.stage, await readJson(req))));
+add("PUT", "/api/projects/:id/collaborators", async (req, env, ctx, p) => {
+  const b = await readJson<{ user_ids?: unknown }>(req);
+  return json(await P.setCollaborators(env, ctx, p.id, b.user_ids));
+});
 add("POST", "/api/projects/:id/advance", async (req, env, ctx, p) => {
   const b = await readJson<{ to?: unknown }>(req);
   return json(await P.advanceStage(env, ctx, p.id, b.to));
@@ -124,6 +129,20 @@ add("POST", "/api/entries/:id/comments", async (req, env, ctx, p) => {
 add("DELETE", "/api/comments/:id", async (_r, env, ctx, p) => {
   await E.deleteComment(env, ctx, p.id);
   return json({ ok: true });
+});
+
+// ---------- 평가 (마일스톤별 평가자 채점·피드백 + 팀 답변) ----------
+add("GET", "/api/projects/:id/evaluations", async (_r, env, ctx, p) => json(await EV.listEvaluations(env, ctx, p.id)));
+add("POST", "/api/projects/:id/evaluations", async (req, env, ctx, p) => json(await EV.createEvaluation(env, ctx, p.id, await readJson(req)), 201));
+add("GET", "/api/evaluations/:id", async (_r, env, ctx, p) => json(await EV.getEvaluation(env, ctx, p.id)));
+add("PATCH", "/api/evaluations/:id", async (req, env, ctx, p) => json(await EV.updateEvaluation(env, ctx, p.id, await readJson(req))));
+add("DELETE", "/api/evaluations/:id", async (_r, env, ctx, p) => {
+  await EV.deleteEvaluation(env, ctx, p.id);
+  return json({ ok: true });
+});
+add("POST", "/api/evaluations/:id/respond", async (req, env, ctx, p) => {
+  const b = await readJson<{ response?: unknown }>(req);
+  return json(await EV.respondEvaluation(env, ctx, p.id, b.response));
 });
 
 // ---------- 할 일 ----------

@@ -15,12 +15,12 @@ export async function render(container, categoryId, query) {
   }
 
   const header = h("header.hero", { style: { padding: "22px 0 18px" } },
-    h("div.eyebrow", `팀 · ${detail.my_role === "admin" ? "관리자" : detail.my_role === "lead" ? "리드" : "구성원"}`),
+    h("div.eyebrow", `팀 · ${detail.category.track === "capstone" ? "캡스톤 트랙" : "논문 트랙"} · 내 역할: ${detail.my_role === "admin" ? "관리자" : detail.my_role === "lead" ? "리드" : detail.my_role === "evaluator" ? "평가자" : "구성원"}`),
     h("div.row.between.top",
       h("div", h("h1", cat.name), cat.description ? h("p.sub", cat.description) : null),
       h("div.row",
         h("button.btn", { onclick: () => reportDialog(categoryId, cat.name) }, "팀 보고서"),
-        h("button.btn.primary", { onclick: () => newProjectDialog(me, categoryId, cat.name) }, "+ 새 프로젝트"),
+        detail.my_role !== "evaluator" ? h("button.btn.primary", { onclick: () => newProjectDialog(me, categoryId, cat.name) }, "+ 새 프로젝트") : null,
       ),
     ),
     h("div.row", { style: { marginTop: "14px" } }, viewSeg, h("span.spacer"),
@@ -40,10 +40,10 @@ export async function render(container, categoryId, query) {
 function renderBoard(board) {
   const cols = h("div.board");
   for (const col of board.columns) {
-    const s = stages().find((x) => x.id === col.stage);
     cols.append(h("div.col",
-      h("div.col-h", s?.label || col.stage, h("span.n", String(col.projects.length)), h("span.spacer"), h("span.tiny.muted", { title: s?.hint }, "")),
-      col.projects.length ? col.projects.map((p) => projectCard(p, { compact: true })) : h("div.tiny.muted", { style: { padding: "6px 4px" } }, s?.hint || ""),
+      h("div.col-h", { title: col.hint }, col.label || stageLabel(col.stage), h("span.n", String(col.projects.length))),
+      col.milestone ? h("div.tiny", { style: { color: "var(--gold)", fontWeight: 700, padding: "0 4px 4px" } }, "⏱ " + col.milestone) : null,
+      col.projects.length ? col.projects.map((p) => projectCard(p, { compact: true })) : h("div.tiny.muted", { style: { padding: "6px 4px" } }, col.hint || ""),
     ));
   }
   const extra = [];
@@ -64,7 +64,7 @@ function renderList(projects) {
         h("td", h("span.row", { style: { gap: "5px" } }, avatar(p.owner_name), p.owner_name)),
         h("td", pill(stageLabel(p.stage))),
         h("td", STATUS_LABEL[p.status]),
-        h("td", `${p.stage_done}/${stages().length}`),
+        h("td", `${p.stage_done}/${stages(p.track).length}`),
         h("td", String(p.entry_count)),
         h("td", { class: stale > 14 && p.status === "active" ? "stale" : "" }, p.last_entry_at ? fmtRel(p.last_entry_at) : "없음"),
         h("td", p.review_requested ? pill(String(p.review_requested), "bad sm") : ""),
@@ -92,7 +92,7 @@ function renderMembers(detail, categoryId, container, query) {
   for (const m of detail.members) {
     const mine = detail.projects.filter((p) => p.owner_id === m.id && p.status !== "archived");
     grid.append(h("div.card",
-      h("div.row", avatar(m.name, true), h("div", h("div", { style: { fontWeight: 700 } }, m.name, " ", m.role === "lead" ? pill("리드", "gold sm") : null), h("div.tiny.muted", m.email || "")), h("span.spacer"),
+      h("div.row", avatar(m.name, true), h("div", h("div", { style: { fontWeight: 700 } }, m.name, " ", m.role === "lead" ? pill("리드", "gold sm") : m.role === "evaluator" ? pill("평가자", "ai sm") : null), h("div.tiny.muted", m.email || "")), h("span.spacer"),
         h("div.right.tiny.muted", `이번 주 ${m.entries_7d}건`, h("br"), m.last_entry_at ? `마지막 ${fmtRel(m.last_entry_at)}` : "기록 없음")),
       mine.length ? h("div.stack", { style: { marginTop: "10px", gap: "4px" } }, mine.map((p) => h("a.small", { href: `#/project/${p.id}` }, "· ", p.title, " ", pill(stageLabel(p.stage), "sm")))) : h("div.tiny.muted", { style: { marginTop: "8px" } }, "프로젝트 없음"),
     ));
@@ -102,7 +102,7 @@ function renderMembers(detail, categoryId, container, query) {
 
 function decide(r, approve, categoryId, container, query) {
   const note = textarea({ rows: 2, placeholder: approve ? "환영 메시지 (선택)" : "거절 사유 (신청자에게 표시)" });
-  const role = select([{ value: "member", label: "구성원" }, { value: "lead", label: "리드" }], { value: "member" });
+  const role = select([{ value: "member", label: "구성원" }, { value: "lead", label: "리드" }, { value: "evaluator", label: "평가자 (평가·코멘트만)" }], { value: "member" });
   modal({ title: `${approve ? "가입 승인" : "가입 거절"} — ${r.user_name}`, body: h("div.stack", approve ? field("역할", role) : null, field(approve ? "메모" : "사유", note)),
     actions: [{ label: "취소" }, { label: approve ? "승인" : "거절", cls: approve ? "primary" : "danger", onClick: async () => {
       await post(`/api/join-requests/${r.id}/${approve ? "approve" : "reject"}`, { note: note.value, role: role.value });

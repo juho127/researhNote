@@ -76,6 +76,38 @@ const TEAM_B = argOf("--team-b") || process.env.SEED_CATEGORY_B;
   const p4 = await api(T.choi, "POST", "/api/projects", { category_id: ts.id, title: "합성 제어법과 딥러닝 결합한 정책 효과 추정", summary: "SCM 의 가중치 추정을 신경망으로 대체했을 때 편향-분산", tags: "인과추론,SCM" });
   await api(T.choi, "POST", `/api/projects/${p4.id}/entries`, { date: d(21), stage: "planning", title: "연구 아이디어 정리 — SCM + NN 가중치", content: "## 메모\n- Abadie SCM 의 볼록 가중 제약을 NN 으로 완화하면 과적합 위험. 정규화 어떻게?\n- 지도교수 미팅에서 범위 좁히기로" });
 
+  // ---- 팀 C: 캡스톤 (트랙 capstone) — 팀 프로젝트 + 평가자 평가 + 팀 답변
+  const TEAM_C = argOf("--team-c") || process.env.SEED_CATEGORY_C;
+  const cap = TEAM_C
+    ? (cats.find((x) => x.id === TEAM_C || x.name === TEAM_C) || (() => { throw new Error(`카테고리를 찾을 수 없습니다: ${TEAM_C}`); })())
+    : (cats.find((x) => x.name === "캡스톤 2026-2") || await api(ADMIN, "POST", "/api/admin/categories", { name: "캡스톤 2026-2", id: "capstone-2026-2", track: "capstone", join_policy: "open", description: "GBT 졸업 프로젝트. 가설→빌드→배포→피드백→학습 루프를 3~4회 돌며 실제 서비스를 만든다. 보고서 3회 + 발표 3회." }));
+  if (cap.track !== "capstone") console.log(`⚠ 팀 C(${cap.name})는 캡스톤 트랙이 아닙니다. 캡스톤 데모는 건너뜁니다.`);
+  else {
+    const s1 = await mk("정우진", "woojin", [cap.id], "woojin@example.ac.kr");
+    const s2 = await mk("한소희", "sohee", [cap.id], "sohee@example.ac.kr");
+    const judge = await mk("류평가", "judge1", [{ category_id: cap.id, role: "evaluator" }], "judge1@example.ac.kr");
+    const judge2 = await mk("오심사", "judge2", [{ category_id: cap.id, role: "evaluator" }], "judge2@example.ac.kr");
+    await api(ADMIN, "PUT", `/api/admin/users/${kim.user.id}/memberships/${cap.id}`, { role: "lead" });
+    const cp = await api(s1.token, "POST", "/api/projects", { category_id: cap.id, title: "동네 러닝 크루 매칭 서비스 'RunMate'", summary: "혼자 뛰는 초보 러너를 주 2회 같이 뛸 동네 크루와 매칭. 가설: 초보 러너의 이탈 원인은 '같이 뛸 사람 부재'", tags: "위치기반,커뮤니티", deadline: d(-60) });
+    await api(s1.token, "PUT", `/api/projects/${cp.id}/collaborators`, { user_ids: [s2.user.id] });
+    await api(s1.token, "PUT", `/api/projects/${cp.id}/stages/topic`, { summary: "## 문제\n초보 러너의 3개월 내 중단율 62% (설문 n=48)\n\n## 목표 고객\n20~30대 직장인, 러닝 경력 6개월 미만\n\n## 검증할 가설\n- H1: 동네 크루 매칭이 주 2회 이상 러닝 지속률을 높인다\n- H2: 매칭 조건 중 '시간대' 가 '페이스' 보다 중요하다" });
+    await api(s1.token, "POST", `/api/projects/${cp.id}/entries`, { date: d(20), stage: "topic", title: "루프 0: 고객 인터뷰 8명, 문제 가설 확정", content: "## 한 일\n- 러닝 앱 사용자 8명 인터뷰 (30분)\n\n## 결과\n- 8명 중 6명이 '같이 뛸 사람이 없어서' 중단 경험\n\n## 다음 할 일\n- [ ] 린 캔버스 v1\n- [ ] TAM-SAM-SOM" });
+    await api(s1.token, "POST", `/api/projects/${cp.id}/advance`, {});
+    await api(s2.token, "PUT", `/api/projects/${cp.id}/stages/market`, { summary: "## TAM-SAM-SOM\n| 구분 | 산정 | 규모 |\n|---|---|---|\n| TAM | 국내 러닝 인구 | 1,000만 |\n| SAM | 수도권 20~30대 초보 | 120만 |\n| SOM | 1년차 목표 (서울 3개 구) | 6,000명 |\n\n## 린 캔버스 v1\n- 문제: 동반 러너 부재 · 솔루션: 시간대·동네 기반 매칭 · 수익: 크루 프리미엄 월 4,900원" });
+    const m1 = await api(s2.token, "POST", `/api/projects/${cp.id}/entries`, { date: d(14), stage: "market", title: "1차 보고서 제출: 시장 분석 + 린 캔버스 v1 + 프로토타입 계획", content: "## 한 일\n- TAM-SAM-SOM 계산기, 린 캔버스 v1 작성\n- 프로토타입: 카카오맵 + 구글폼 매칭 (노코드)\n\n## 다음 할 일\n- [ ] 루프 1 MVP 배포", review_status: "requested" });
+    const e1 = await api(judge.token, "POST", `/api/projects/${cp.id}/evaluations`, { stage: "market", title: "1차 보고서 평가", scores: { improvement: 22, achievement: 24, records: 16, viability: 12 }, feedback: "## 잘한 점\n- 문제 정의가 인터뷰 근거로 뒷받침됨\n\n## 개선할 점\n- SAM 산정에서 '초보' 비율 근거가 없음 (통계 출처 필요)\n- 수익 모델은 가설이므로 루프 1에서 지불 의사를 먼저 검증할 것\n\n## 다음 마일스톤까지\n- 배포된 URL 로 실제 사용자 10명 확보" });
+    await api(judge2.token, "POST", `/api/projects/${cp.id}/evaluations`, { stage: "market", title: "1차 보고서 평가", scores: { improvement: 20, achievement: 22, records: 18, viability: 10 }, feedback: "린 캔버스의 '핵심 지표' 칸이 비어 있음. 주 2회 러닝 지속률을 어떻게 측정할지 정의하세요." });
+    await api(s1.token, "POST", `/api/evaluations/${e1.id}/respond`, { response: "SAM 근거는 체육진흥공단 국민생활체육조사(2025) 러닝 참여율 × 경력 6개월 미만 비율로 보강하겠습니다. 지불 의사는 루프 1 랜딩 페이지에 '프리미엄 사전예약' 버튼으로 검증합니다." });
+    await api(s1.token, "POST", `/api/projects/${cp.id}/advance`, {});
+    await api(s2.token, "POST", `/api/projects/${cp.id}/entries`, { date: d(5), stage: "mvp", title: "루프 1: MVP 배포 (runmate.pages.dev), 가입 23명", content: "## 한 일\n- Claude Code 로 매칭 폼 + 지도 구현, Cloudflare Pages 배포\n\n## 결과\n- 배포 5일: 방문 140, 가입 23, 매칭 성사 4건\n- 프리미엄 사전예약 클릭 6건 (가입자의 26%)\n\n## 다음 할 일\n- [ ] 매칭 성사자 4팀 인터뷰\n- [ ] 캔버스 v2 (시간대 우선 가설 반영)", review_status: "requested" });
+    await api(s1.token, "POST", `/api/projects/${cp.id}/tasks`, { title: "8주차 2차 보고서: 배포 MVP + 첫 피드백 + 캔버스 v2 + 1차 평가의견 답변 첨부", due: d(-10), assignee_id: s2.user.id, stage: "feedback" });
+    T.woojin = s1.token; T.judge = judge.token;
+    console.log(`  정우진 (캡스톤 팀 담당)         : ${s1.token}`);
+    console.log(`  한소희 (캡스톤 협업자)          : ${s2.token}`);
+    console.log(`  류평가 (캡스톤 평가자)          : ${judge.token}`);
+    console.log(`  오심사 (캡스톤 평가자 2)        : ${judge2.token}`);
+  }
+
   console.log(`\n✅ 데모 데이터 생성 완료 (${BASE})`);
   console.log("데모 로그인 토큰 (지금만 표시):");
   console.log(`  김지원 (팀A 리드 / 팀B 구성원): ${T.kim}`);

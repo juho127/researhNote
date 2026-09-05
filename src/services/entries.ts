@@ -1,10 +1,10 @@
 import type { AuthContext, Env, Stage } from "../env";
-import { REVIEW_STATUSES, isStage } from "../env";
+import { REVIEW_STATUSES, isStage, isStageOf, stageIds, trackOf } from "../env";
 import { bad, forbidden, notFound, isDateStr, oneOf, str, strLimited, clampInt } from "../lib/http";
 import { newId } from "../lib/id";
 import { nowIso, todayIn } from "../lib/time";
 import { categoryRole, requireCategoryMember, canReview } from "../lib/auth";
-import { getEntry, getProject, getProjectForRead, logActivity, touchProject, type EntryRow } from "../lib/db";
+import { getEntry, getProject, getProjectForRead, isCollaborator, logActivity, touchProject, type EntryRow } from "../lib/db";
 
 export interface EntryFull extends EntryRow {
   author_name: string;
@@ -130,14 +130,14 @@ export async function createEntry(env: Env, ctx: AuthContext, projectId: string,
   const p = await getProjectForRead(env, ctx, projectId);
   // 기록 작성: 소유자 / 리드 / 관리자. 같은 카테고리 구성원은 코멘트로 참여.
   const role = categoryRole(ctx, p.category_id);
-  if (!(role === "admin" || role === "lead" || p.owner_id === ctx.user.id)) forbidden("기록은 프로젝트 소유자·리드·관리자만 작성할 수 있습니다 (팀원은 코멘트로 참여)");
+  if (!(role === "admin" || role === "lead" || p.owner_id === ctx.user.id || (await isCollaborator(env, p.id, ctx.user.id)))) forbidden("기록은 프로젝트 담당자·협업자·리드·관리자만 작성할 수 있습니다 (팀원은 코멘트로 참여)");
   if (p.status === "archived") forbidden("보관된 프로젝트에는 기록할 수 없습니다. 먼저 상태를 되돌리세요");
   const title = strLimited(input.title, 200, "title");
   if (!title) bad("title 이 필요합니다");
   const date = input.date === undefined || input.date === null || input.date === "" ? todayIn(env.APP_TZ) : (isDateStr(input.date) ? input.date : bad("date 는 YYYY-MM-DD 형식"));
   let stage: Stage = p.stage;
   if (input.stage !== undefined && input.stage !== null && input.stage !== "") {
-    if (!isStage(input.stage)) bad("stage 값이 올바르지 않습니다");
+    if (!isStageOf(p.track, input.stage)) bad(`stage 값이 올바르지 않습니다 (${trackOf(p.track).label} 트랙: ${stageIds(p.track).join(", ")})`);
     stage = input.stage;
   }
   const content = strLimited(input.content, 200_000, "content");
@@ -195,7 +195,7 @@ export async function updateEntry(env: Env, ctx: AuthContext, id: string, input:
     params.push(input.date);
   }
   if (input.stage !== undefined) {
-    if (!isStage(input.stage)) bad("stage 값이 올바르지 않습니다");
+    if (!isStageOf(p.track, input.stage)) bad(`stage 값이 올바르지 않습니다 (${trackOf(p.track).label} 트랙: ${stageIds(p.track).join(", ")})`);
     sets.push("stage = ?");
     params.push(input.stage);
   }

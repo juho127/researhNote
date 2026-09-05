@@ -36,7 +36,7 @@ export async function publicConfig(env: Env) {
     app: { name: env.APP_NAME, org: env.ORG_NAME, org_sub: env.ORG_SUB, mark: env.ORG_MARK },
     signup_enabled: signupEnabled(env),
     signup_code_required: !!env.SIGNUP_CODE,
-    categories: cats.map((c) => ({ id: c.id, name: c.name, description: c.description })),
+    categories: cats.map((c) => ({ id: c.id, name: c.name, description: c.description, track: c.track })),
   };
 }
 
@@ -132,7 +132,7 @@ export async function approveRequest(env: Env, ctx: AuthContext, id: string, inp
   if (!r) notFound("신청을 찾을 수 없습니다");
   if (r.status !== "pending") bad(`이미 처리된 신청입니다 (${r.status})`);
   const categoryId = input.category_id !== undefined ? str(input.category_id, 100) : r.category_id;
-  const role = input.role === undefined ? "member" : oneOf(input.role, ["lead", "member"] as const, "role");
+  const role = input.role === undefined ? "member" : oneOf(input.role, ["lead", "member", "evaluator"] as const, "role");
   const created = await createUser(env, ctx, {
     name: input.name !== undefined ? input.name : r.name,
     id: input.id,

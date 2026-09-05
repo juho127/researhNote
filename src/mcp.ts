@@ -9,7 +9,7 @@
  *   DELETE /mcp 200 (세션 종료 no-op)
  */
 import type { AuthContext, Env } from "./env";
-import { STAGES, STAGE_LABELS, STAGE_HINTS } from "./env";
+import { STAGES, STAGE_LABELS, STAGE_HINTS, ALL_STAGE_IDS, TRACKS, stageIds, trackOf } from "./env";
 import { authenticate } from "./lib/auth";
 import { HttpError, CORS_HEADERS } from "./lib/http";
 import { todayIn } from "./lib/time";
@@ -19,6 +19,7 @@ import * as T from "./services/tasks";
 import * as F from "./services/feed";
 import * as R from "./services/report";
 import * as TM from "./services/teams";
+import * as EV from "./services/evaluations";
 import { SKILL_MD, SKILL_SHORT } from "./skill";
 
 const SERVER_NAME = "research-note";
@@ -40,7 +41,11 @@ interface ToolDef {
   handler: (env: Env, ctx: AuthContext, args: Record<string, unknown>) => Promise<{ text: string; data?: unknown }>;
 }
 
-const stageEnum = { type: "string", enum: [...STAGES], description: `연구 단계: ${STAGES.map((s) => `${s}=${STAGE_LABELS[s]}`).join(", ")}` };
+const stageEnum = {
+  type: "string",
+  enum: [...ALL_STAGE_IDS],
+  description: Object.values(TRACKS).map((t) => `${t.label} 트랙: ${t.stages.map((s) => `${s.id}=${s.label}`).join(", ")}`).join(" / ") + ". 프로젝트의 트랙(get_project 의 track)에 맞는 단계만 유효",
+};
 const idProp = (d: string) => ({ type: "string", description: d });
 const dateProp = (d: string) => ({ type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: `${d} (YYYY-MM-DD)` });
 const j = (v: unknown) => JSON.stringify(v, null, 2);
@@ -50,9 +55,11 @@ function projectSummaryMd(p: P.ProjectDetail): string {
   const L = [
     `# ${p.title}`,
     `- id: ${p.id} · 카테고리: ${p.category_name} (${p.category_id}) · 담당: ${p.owner_name}`,
-    `- 현재 단계: ${STAGE_LABELS[p.stage]} (${p.stage}) · 상태: ${p.status}${p.target_venue ? ` · 목표: ${p.target_venue}` : ""}${p.deadline ? ` · 마감: ${p.deadline}` : ""}`,
-    `- 기록 ${p.entry_count}건 · 완료 단계 ${p.stage_done}/${STAGES.length} · 미완료 할 일 ${p.open_tasks}건 · 검토 대기 ${p.review_requested}건`,
-  ];
+    `- 트랙: ${p.track_label} (${p.track}) · 현재 단계: ${STAGE_LABELS[p.stage]} (${p.stage}) · 상태: ${p.status}${p.target_venue ? ` · 목표: ${p.target_venue}` : ""}${p.deadline ? ` · 마감: ${p.deadline}` : ""}`,
+    `- 단계 순서: ${stageIds(p.track).map((s) => `${s}=${STAGE_LABELS[s]}`).join(" → ")}`,
+    `- 기록 ${p.entry_count}건 · 완료 단계 ${p.stage_done}/${stageIds(p.track).length} · 미완료 할 일 ${p.open_tasks}건 · 검토 대기 ${p.review_requested}건`,
+    p.collaborators.length ? `- 협업자: ${p.collaborators.map((c) => `${c.name} (${c.id})`).join(", ")}` : "",
+  ].filter(Boolean);
   if (p.summary) L.push("", `## 연구 요약`, p.summary);
   L.push("", `## 단계별 정리`);
   for (const st of p.stages) {
@@ -83,7 +90,7 @@ const TOOLS: ToolDef[] = [
       L.push(`소속 카테고리: ${m.memberships.length ? m.memberships.map((x) => `${x.category_name} (${x.category_id}, ${x.role})`).join(", ") : "없음"}`);
       L.push(`내 프로젝트 ${m.my_projects.length}건:`);
       for (const p of m.my_projects) L.push(`- ${p.title} (${p.id}) · ${STAGE_LABELS[p.stage]} · ${p.status} · 기록 ${p.entry_count}건 · 마지막 ${p.last_entry_date ?? "없음"}`);
-      L.push("", `단계: ${STAGES.map((st) => `${st}=${STAGE_LABELS[st]}`).join(", ")}`);
+      for (const t of Object.values(TRACKS)) L.push(`${t.label} 트랙 단계: ${t.stages.map((st) => `${st.id}=${st.label}`).join(" → ")}`);
       return { text: L.join("\n"), data: m };
     },
   },
@@ -122,7 +129,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "create_project",
     title: "프로젝트(논문) 생성",
-    description: "새 논문 프로젝트를 만든다. 사용자가 명시적으로 새 연구를 시작할 때만 사용.",
+    description: "새 프로젝트(논문 또는 캡스톤)를 만든다. 트랙은 카테고리에 따라 정해진다. 사용자가 명시적으로 새 연구/프로젝트를 시작할 때만 사용.",
     inputSchema: {
       type: "object",
       properties: {
@@ -157,14 +164,67 @@ const TOOLS: ToolDef[] = [
         target_venue: { type: "string" },
         deadline: { type: ["string", "null"], description: "YYYY-MM-DD 또는 null(해제)" },
         tags: { type: "array", items: { type: "string" } },
+        collaborators: { type: "array", items: { type: "string" }, description: "협업자 사용자 ID 목록 (전체 교체). 캡스톤 팀원 등 담당자와 같은 편집 권한" },
       },
       required: ["project_id"],
       additionalProperties: false,
     },
     handler: async (env, ctx, a) => {
-      const { project_id, ...rest } = a;
-      const p = await P.updateProject(env, ctx, String(project_id), rest);
-      return { text: `수정됨: ${p.title} (${p.id}) · ${STAGE_LABELS[p.stage]} · ${p.status}`, data: p };
+      const { project_id, collaborators, ...rest } = a;
+      let p = Object.keys(rest).length ? await P.updateProject(env, ctx, String(project_id), rest) : await P.getProjectDetail(env, ctx, String(project_id));
+      if (collaborators !== undefined) p = await P.setCollaborators(env, ctx, String(project_id), collaborators);
+      return { text: `수정됨: ${p.title} (${p.id}) · ${STAGE_LABELS[p.stage]} · ${p.status}${p.collaborators.length ? ` · 협업자 ${p.collaborators.map((c) => c.name).join(", ")}` : ""}`, data: p };
+    },
+  },
+  {
+    name: "list_evaluations",
+    title: "평가·피드백 목록",
+    description: "프로젝트에 대한 평가자들의 평가(루브릭 점수·피드백)와 팀 답변을 본다. 마일스톤(단계)별로 여러 평가자가 평가할 수 있다.",
+    inputSchema: { type: "object", properties: { project_id: idProp("프로젝트 ID") }, required: ["project_id"], additionalProperties: false },
+    handler: async (env, ctx, a) => {
+      const r = await EV.listEvaluations(env, ctx, String(a.project_id));
+      const max = r.rubric.reduce((x, y) => x + y.max, 0);
+      const L = [`루브릭: ${r.rubric.map((x) => `${x.id}=${x.label}(0~${x.max})`).join(", ")} · 만점 ${max}`];
+      for (const ev of r.evaluations) {
+        L.push(`### ${ev.title} (${ev.id}) · ${STAGE_LABELS[ev.stage]} · ${ev.evaluator_name} · ${ev.created_at.slice(0, 10)}${ev.total !== null ? ` · ${ev.total}/${max}` : ""}${ev.visible ? "" : " · 초안"}`);
+        if (Object.keys(ev.scores).length) L.push(Object.entries(ev.scores).map(([k, v]) => `${STAGE_LABELS[k] ?? r.rubric.find((x) => x.id === k)?.label ?? k}: ${v}`).join(" · "));
+        if (ev.feedback) L.push(ev.feedback);
+        if (ev.response) L.push(`> 팀 답변 (${ev.response_by_name ?? ""}): ${ev.response}`);
+      }
+      if (!r.evaluations.length) L.push("평가 없음");
+      return { text: L.join("\n"), data: r };
+    },
+  },
+  {
+    name: "add_evaluation",
+    title: "평가 작성 (리드·평가자·관리자)",
+    description: "마일스톤(단계)에 대한 평가를 남긴다. scores 는 트랙 루브릭 축별 점수 {축id: 점수} (list_evaluations 로 축·만점 확인). 사용자가 평가자일 때만.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: idProp("프로젝트 ID"),
+        stage: { ...stageEnum, description: "평가 대상 단계 (생략 시 현재 단계)" },
+        title: { type: "string", description: "예: 1차 보고서 평가" },
+        scores: { type: "object", description: "{축id: 점수}" },
+        feedback: { type: "string", description: "피드백 (마크다운)" },
+        visible: { type: "boolean", description: "false 면 초안(팀에게 비공개)" },
+      },
+      required: ["project_id"],
+      additionalProperties: false,
+    },
+    handler: async (env, ctx, a) => {
+      const ev = await EV.createEvaluation(env, ctx, String(a.project_id), { stage: a.stage, title: a.title, scores: a.scores, feedback: a.feedback, visible: a.visible });
+      return { text: `평가 저장됨: ${ev.title} (${ev.id})${ev.total !== null ? ` · ${ev.total}/${ev.max_total}` : ""}`, data: ev };
+    },
+  },
+  {
+    name: "respond_evaluation",
+    title: "평가에 팀 답변",
+    description: "평가자의 피드백에 대한 팀의 답변(반영 계획·반박)을 남긴다. 담당자·협업자·리드·관리자.",
+    inputSchema: { type: "object", properties: { evaluation_id: idProp("평가 ID"), response: { type: "string" } }, required: ["evaluation_id", "response"], additionalProperties: false },
+    handler: async (env, ctx, a) => {
+      const ev = await EV.respondEvaluation(env, ctx, String(a.evaluation_id), a.response);
+      return { text: `답변 저장됨: ${ev.title}`, data: ev };
     },
   },
   {
@@ -281,7 +341,7 @@ const TOOLS: ToolDef[] = [
     inputSchema: { type: "object", properties: { project_id: idProp("프로젝트 ID"), to: { ...stageEnum, description: "이동할 단계 (생략 시 다음 단계)" } }, required: ["project_id"], additionalProperties: false },
     handler: async (env, ctx, a) => {
       const p = await P.advanceStage(env, ctx, String(a.project_id), a.to);
-      return { text: p.status === "done" ? `논문 완료 처리됨: ${p.title}` : `현재 단계: ${STAGE_LABELS[p.stage]} (${p.title}) · 완료 단계 ${p.stage_done}/${STAGES.length}`, data: p };
+      return { text: p.status === "done" ? `${p.track_noun} 완료 처리됨: ${p.title}` : `현재 단계: ${STAGE_LABELS[p.stage]} (${p.title}) · 완료 단계 ${p.stage_done}/${stageIds(p.track).length}`, data: p };
     },
   },
   {

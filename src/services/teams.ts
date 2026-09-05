@@ -13,13 +13,14 @@ export interface LobbyTeam {
   name: string;
   description: string;
   join_policy: JoinPolicy;
+  track: string;
   member_count: number;
   lead_names: string | null;
   member_names: string | null;
   active_projects: number;
   entries_7d: number;
   last_activity_at: string | null;
-  my_role: "admin" | "lead" | "member" | null;
+  my_role: "admin" | "lead" | "member" | "evaluator" | null;
   my_request_status: "pending" | "rejected" | null;
   my_request_id: string | null;
 }
@@ -28,7 +29,7 @@ export interface LobbyTeam {
 export async function lobby(env: Env, ctx: AuthContext): Promise<LobbyTeam[]> {
   const rs = await env.DB
     .prepare(
-      `SELECT c.id, c.name, c.description, c.join_policy,
+      `SELECT c.id, c.name, c.description, c.join_policy, c.track,
          (SELECT COUNT(*) FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.category_id = c.id AND u.disabled_at IS NULL) AS member_count,
          (SELECT GROUP_CONCAT(u.name, ', ') FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.category_id = c.id AND m.role = 'lead' AND u.disabled_at IS NULL) AS lead_names,
          (SELECT GROUP_CONCAT(u.name, ', ') FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.category_id = c.id AND u.disabled_at IS NULL) AS member_names,
@@ -143,7 +144,7 @@ export async function decideJoinRequest(env: Env, ctx: AuthContext, id: string, 
   if (r.status !== "pending") bad(`이미 처리된 요청입니다 (${r.status})`);
   const at = nowIso();
   if (approve) {
-    const memberRole = oneOf(role ?? "member", ["lead", "member"] as const, "role");
+    const memberRole = oneOf(role ?? "member", ["lead", "member", "evaluator"] as const, "role");
     await env.DB.batch([
       env.DB.prepare(`INSERT OR REPLACE INTO memberships (user_id, category_id, role, created_at) VALUES (?, ?, ?, ?)`).bind(r.user_id, r.category_id, memberRole, at),
       env.DB.prepare(`UPDATE join_requests SET status = 'approved', decided_by = ?, decided_at = ?, decision_note = ? WHERE id = ?`).bind(ctx.user.id, at, str(note, 500), id),

@@ -1,5 +1,5 @@
 import type { AuthContext, Env, User } from "../env";
-import { STAGES } from "../env";
+import { TRACKS, isTrack, DEFAULT_TRACK } from "../env";
 import { bad, oneOf, str, bool, clampInt } from "../lib/http";
 import { newId, newToken, tokenHint, sha256Hex, slugify } from "../lib/id";
 import { nowIso, daysAgoIso, daysAgoDate } from "../lib/time";
@@ -13,6 +13,7 @@ export interface CategoryRow {
   description: string;
   color: string;
   join_policy: string;
+  track: string;
   created_at: string;
   archived_at: string | null;
   member_count?: number;
@@ -35,7 +36,7 @@ export async function listCategories(env: Env, includeArchived = false): Promise
 
 const JOIN_POLICIES = ["open", "approval", "closed"] as const;
 
-export async function createCategory(env: Env, ctx: AuthContext, input: { name?: unknown; description?: unknown; color?: unknown; id?: unknown; join_policy?: unknown }): Promise<CategoryRow> {
+export async function createCategory(env: Env, ctx: AuthContext, input: { name?: unknown; description?: unknown; color?: unknown; id?: unknown; join_policy?: unknown; track?: unknown }): Promise<CategoryRow> {
   const name = str(input.name, 100);
   if (!name) bad("name 이 필요합니다");
   const dup = await env.DB.prepare(`SELECT id FROM categories WHERE name = ?`).bind(name).first();
@@ -45,15 +46,20 @@ export async function createCategory(env: Env, ctx: AuthContext, input: { name?:
   if (clash) id = `${id}-${newId("c").slice(2, 6)}`;
   const at = nowIso();
   const policy = input.join_policy === undefined || input.join_policy === null ? "approval" : oneOf(input.join_policy, JOIN_POLICIES, "join_policy");
+  let track = DEFAULT_TRACK;
+  if (input.track !== undefined && input.track !== null && input.track !== "") {
+    if (!isTrack(input.track)) bad(`track 값은 ${Object.keys(TRACKS).join(" | ")} 중 하나여야 합니다`);
+    track = input.track;
+  }
   await env.DB
-    .prepare(`INSERT INTO categories (id, name, description, color, join_policy, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
-    .bind(id, name, str(input.description, 1000), str(input.color, 20), policy, at)
+    .prepare(`INSERT INTO categories (id, name, description, color, join_policy, track, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .bind(id, name, str(input.description, 1000), str(input.color, 20), policy, track, at)
     .run();
   await logActivity(env, { actor_id: ctx.user.id, category_id: id, action: "category.create", target_id: id, summary: name, source: ctx.source });
   return (await env.DB.prepare(`SELECT * FROM categories WHERE id = ?`).bind(id).first<CategoryRow>())!;
 }
 
-export async function updateCategory(env: Env, ctx: AuthContext, id: string, input: { name?: unknown; description?: unknown; color?: unknown; archived?: unknown; join_policy?: unknown }): Promise<CategoryRow> {
+export async function updateCategory(env: Env, ctx: AuthContext, id: string, input: { name?: unknown; description?: unknown; color?: unknown; archived?: unknown; join_policy?: unknown; track?: unknown }): Promise<CategoryRow> {
   const c = await env.DB.prepare(`SELECT * FROM categories WHERE id = ?`).bind(id).first<CategoryRow>();
   if (!c) bad("카테고리를 찾을 수 없습니다");
   const sets: string[] = [];
@@ -77,6 +83,13 @@ export async function updateCategory(env: Env, ctx: AuthContext, id: string, inp
   if (input.join_policy !== undefined && input.join_policy !== null) {
     sets.push("join_policy = ?");
     params.push(oneOf(input.join_policy, JOIN_POLICIES, "join_policy"));
+  }
+  if (input.track !== undefined && input.track !== null && input.track !== "" && input.track !== c.track) {
+    if (!isTrack(input.track)) bad(`track 값은 ${Object.keys(TRACKS).join(" | ")} 중 하나여야 합니다`);
+    const n = await env.DB.prepare(`SELECT COUNT(*) AS n FROM projects WHERE category_id = ?`).bind(id).first<{ n: number }>();
+    if ((n?.n ?? 0) > 0) bad("프로젝트가 있는 카테고리의 트랙은 바꿀 수 없습니다 (새 카테고리를 만드세요)");
+    sets.push("track = ?");
+    params.push(input.track);
   }
   if (input.archived !== undefined && input.archived !== null) {
     sets.push("archived_at = ?");
@@ -136,18 +149,18 @@ export interface UserInput {
   issue_token?: unknown; // true 면 생성과 동시에 토큰 발급
 }
 
-function normMemberships(v: unknown): { category_id: string; role: "lead" | "member" }[] {
+function normMemberships(v: unknown): { category_id: string; role: "lead" | "member" | "evaluator" }[] {
   if (!Array.isArray(v)) return [];
   return v
     .map((x) => {
       if (typeof x === "string") return { category_id: x, role: "member" as const };
       if (x && typeof x === "object") {
         const o = x as Record<string, unknown>;
-        return { category_id: str(o.category_id, 100), role: (o.role === "lead" ? "lead" : "member") as "lead" | "member" };
+        return { category_id: str(o.category_id, 100), role: (o.role === "lead" ? "lead" : o.role === "evaluator" ? "evaluator" : "member") as "lead" | "member" | "evaluator" };
       }
       return null;
     })
-    .filter((x): x is { category_id: string; role: "lead" | "member" } => !!x && !!x.category_id);
+    .filter((x): x is { category_id: string; role: "lead" | "member" | "evaluator" } => !!x && !!x.category_id);
 }
 
 /** 소속 목록의 category_id 가 모두 존재하는지 확인 (없으면 400) */
@@ -241,7 +254,7 @@ export async function setMembership(env: Env, ctx: AuthContext, userId: string, 
   if (!u) bad("사용자를 찾을 수 없습니다");
   const c = await env.DB.prepare(`SELECT id, name FROM categories WHERE id = ?`).bind(categoryId).first<{ id: string; name: string }>();
   if (!c) bad("카테고리를 찾을 수 없습니다");
-  const r = oneOf(role ?? "member", ["lead", "member"] as const, "role");
+  const r = oneOf(role ?? "member", ["lead", "member", "evaluator"] as const, "role");
   await env.DB.prepare(`INSERT OR REPLACE INTO memberships (user_id, category_id, role, created_at) VALUES (?, ?, ?, ?)`).bind(userId, categoryId, r, nowIso()).run();
   await logActivity(env, { actor_id: ctx.user.id, category_id: categoryId, action: "membership.set", target_id: userId, summary: `${c.name}: ${r}`, source: ctx.source });
 }
@@ -334,7 +347,7 @@ export async function overview(env: Env) {
         (SELECT COUNT(*) FROM tokens WHERE revoked_at IS NULL) AS active_tokens,
         (SELECT COUNT(*) FROM signup_requests WHERE status = 'pending') AS pending_requests,
         (SELECT COUNT(*) FROM join_requests WHERE status = 'pending') AS pending_joins`).bind(d7, d30),
-    env.DB.prepare(`SELECT stage, COUNT(*) AS n FROM projects WHERE status = 'active' GROUP BY stage`),
+    env.DB.prepare(`SELECT track, stage, COUNT(*) AS n FROM projects WHERE status = 'active' GROUP BY track, stage`),
     env.DB.prepare(`
       SELECT c.id, c.name,
         (SELECT COUNT(*) FROM memberships m WHERE m.category_id = c.id) AS members,
@@ -363,11 +376,19 @@ export async function overview(env: Env) {
       FROM projects p JOIN users u ON u.id = p.owner_id JOIN categories c ON c.id = p.category_id
       WHERE p.status = 'active' AND p.deadline IS NOT NULL AND p.deadline >= ? ORDER BY p.deadline LIMIT 20`).bind(daysAgoDate(0, tz)),
   ]);
-  const stageCounts: Record<string, number> = Object.fromEntries(STAGES.map((s) => [s, 0]));
-  for (const r of byStage.results as { stage: string; n: number }[]) stageCounts[r.stage] = r.n;
+  const stageCounts: Record<string, number> = {};
+  const byTrack: Record<string, { label: string; stages: { id: string; label: string; n: number }[] }> = {};
+  for (const t of Object.values(TRACKS)) byTrack[t.id] = { label: t.label, stages: t.stages.map((s) => ({ id: s.id, label: s.label, n: 0 })) };
+  for (const r of byStage.results as { track: string; stage: string; n: number }[]) {
+    stageCounts[r.stage] = (stageCounts[r.stage] ?? 0) + r.n;
+    const t = byTrack[r.track] ?? byTrack[DEFAULT_TRACK];
+    const st = t.stages.find((x) => x.id === r.stage);
+    if (st) st.n += r.n;
+  }
   return {
     counts: counts.results[0],
     by_stage: stageCounts,
+    by_track: byTrack,
     by_category: byCategory.results,
     per_user: perUser.results,
     daily_activity: recent.results,

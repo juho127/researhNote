@@ -41,10 +41,15 @@
 | PATCH | `/api/projects/:id` | 위 필드 중 일부. `stage` 변경 시 해당 단계가 todo 면 doing 으로. `owner_id`(리드+), `category_id`(관리자) |
 | DELETE | `/api/projects/:id` | 보관(status=archived). 데이터 유지 |
 | PUT | `/api/projects/:id/stages/:stage` | `{summary(마크다운, 덮어쓰기)}` → 상세. 상태는 흐름에서 도출됨. 호환 별칭: `set_current:true` 또는 `status:"doing"` → 그 단계로 이동, `status:"done"`(현재 단계) → 다음 단계로 |
+| PUT | `/api/projects/:id/collaborators` | `{user_ids: [...]}` 협업자 전체 교체 (담당자·리드·관리자). 같은 카테고리 구성원만, 평가자 제외 |
+| GET | `/api/projects/:id/evaluations` | `{evaluations[], rubric[], summary{stage: {count, avg_total}}}`. 초안(visible=false)은 평가자·리드·관리자만 |
+| POST | `/api/projects/:id/evaluations` | `{stage?, title?, scores: {축id: 점수}, feedback(md), visible?}` (리드·평가자·관리자) → 201 |
+| GET/PATCH/DELETE | `/api/evaluations/:id` | 작성한 평가자·관리자 |
+| POST | `/api/evaluations/:id/respond` | `{response(md)}` 팀 답변 (담당자·협업자·리드·관리자) |
 | POST | `/api/projects/:id/advance` | `{to?: stage}` 생략: 현재 단계 완료 → 다음 단계 (마지막 단계면 논문 완료 `status=done`). `to`: 그 단계로 이동(되돌리기 포함). 앞 단계=done, 대상=doing, 뒤=todo 로 재계산 |
 | GET | `/api/projects/:id/report?format=html|md|json&from=&to=&comments=0&download=1` | 프로젝트 보고서 |
 
-프로젝트 카드 필드: `id, category_id, category_name, owner_id, owner_name, title, summary, stage, status, target_venue, deadline, tags, created_at, updated_at, entry_count, last_entry_date, last_entry_at, open_tasks, review_requested, stage_done`
+프로젝트 카드 필드: `id, category_id, category_name, owner_id, owner_name, title, summary, stage, status, track(paper|capstone), target_venue, deadline, tags, created_at, updated_at, entry_count, last_entry_date, last_entry_at, open_tasks, review_requested, stage_done`. 상세에는 `stages[](트랙 순서), tasks[], members[](role: lead|member|evaluator), collaborators[], can_edit, can_review, can_evaluate, track_label, track_noun` 추가. `stage` 값은 프로젝트 트랙의 단계만 유효 (`GET /api/me` 의 `tracks` 참고).
 
 ## 기록 (entries)
 
@@ -97,8 +102,8 @@
 | GET | `/api/admin/overview` | `counts, by_stage, by_category[], per_user[], daily_activity[], review_queue[], deadlines[]` |
 | GET | `/api/admin/activity?category_id=&actor_id=&limit=&before=` | 활동 로그 |
 | GET | `/api/admin/categories?all=1` | 보관 포함 |
-| POST | `/api/admin/categories` | `{name*, description, color, id, join_policy: open|approval|closed}` |
-| PATCH | `/api/admin/categories/:id` | `{name, description, color, archived: bool, join_policy}` |
+| POST | `/api/admin/categories` | `{name*, description, color, id, join_policy: open|approval|closed, track: paper|capstone}` |
+| PATCH | `/api/admin/categories/:id` | `{name, description, color, archived: bool, join_policy, track(프로젝트가 없을 때만)}` |
 | GET | `/api/admin/users` | 사용자 + `memberships[], token_count, active_tokens, project_count, entry_count, last_entry_at` |
 | POST | `/api/admin/users` | `{name*, id, email, role: admin|member, note, categories: ["cat"] | [{category_id, role: lead|member}], issue_token: bool}` → `{user, token?, token_hint?}` |
 | PATCH | `/api/admin/users/:id` | `{name, email, role, note, disabled: bool, categories(전체 교체)}` |

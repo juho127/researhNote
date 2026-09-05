@@ -88,21 +88,29 @@ export function requireAdmin(ctx: AuthContext): void {
   if (!ctx.isAdmin) forbidden("관리자 권한이 필요합니다");
 }
 
-export function categoryRole(ctx: AuthContext, categoryId: string): "admin" | "lead" | "member" | null {
+export type EffectiveRole = "admin" | "lead" | "member" | "evaluator";
+
+export function categoryRole(ctx: AuthContext, categoryId: string): EffectiveRole | null {
   if (ctx.isAdmin) return "admin";
   const m = ctx.memberships.find((x) => x.category_id === categoryId);
   return m ? m.role : null;
 }
 
-/** 카테고리 열람 권한 (관리자 또는 구성원) */
-export function requireCategoryMember(ctx: AuthContext, categoryId: string): "admin" | "lead" | "member" {
+/** 카테고리 열람 권한 (관리자 또는 구성원·평가자) */
+export function requireCategoryMember(ctx: AuthContext, categoryId: string): EffectiveRole {
   const r = categoryRole(ctx, categoryId);
   if (!r) forbidden("이 카테고리의 구성원이 아닙니다");
   return r;
 }
 
-/** 검토 권한: 관리자 / 카테고리 리드 / (동일 카테고리 구성원도 코멘트 가능하므로 승인만 리드 이상) */
+/** 검토 권한: 관리자 / 카테고리 리드 */
 export function canReview(ctx: AuthContext, categoryId: string): boolean {
   const r = categoryRole(ctx, categoryId);
   return r === "admin" || r === "lead";
+}
+
+/** 평가 권한: 관리자 / 리드 / 평가자 (여러 명 가능) */
+export function canEvaluate(ctx: AuthContext, categoryId: string): boolean {
+  const r = categoryRole(ctx, categoryId);
+  return r === "admin" || r === "lead" || r === "evaluator";
 }

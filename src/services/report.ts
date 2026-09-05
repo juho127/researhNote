@@ -1,10 +1,11 @@
 import type { AuthContext, Env, Stage } from "../env";
-import { STAGES, STAGE_LABELS, STAGE_HINTS } from "../env";
+import { STAGE_LABELS, STAGE_HINTS, stageIds, trackOf } from "../env";
 import { requireCategoryMember } from "../lib/auth";
 import { escapeHtml, renderMarkdown } from "../lib/markdown";
 import { isDateStr, bad } from "../lib/http";
 import { getProjectDetail, listProjects, type ProjectDetail } from "./projects";
 import { listEntries, type EntryFull, type CommentRow } from "./entries";
+import { evaluationsForReport } from "./evaluations";
 
 const STATUS_LABEL: Record<string, string> = { active: "진행 중", paused: "일시 중지", done: "완료", archived: "보관" };
 const STAGE_STATUS_LABEL: Record<string, string> = { todo: "예정", doing: "진행 중", done: "완료" };
@@ -21,6 +22,7 @@ interface ProjectReportData {
   project: ProjectDetail;
   entries: EntryFull[];
   comments: Record<string, CommentRow[]>;
+  evaluations: Awaited<ReturnType<typeof evaluationsForReport>>;
   generated_at: string;
   from?: string;
   to?: string;
@@ -56,7 +58,8 @@ async function collectProject(env: Env, ctx: AuthContext, projectId: string, opt
       for (const c of rs.results ?? []) (comments[c.entry_id] ||= []).push(c);
     }
   }
-  return { project, entries, comments, generated_at: new Date().toISOString(), from: opts.from, to: opts.to };
+  const evaluations = await evaluationsForReport(env, projectId);
+  return { project, entries, comments, evaluations, generated_at: new Date().toISOString(), from: opts.from, to: opts.to };
 }
 
 function fmtDateTime(iso: string | null | undefined, tz: string): string {
@@ -75,13 +78,13 @@ export function projectReportMarkdown(d: ProjectReportData, tz: string): string 
   const L: string[] = [];
   L.push(`# ${p.title}`);
   L.push("");
-  L.push(`- 카테고리: ${p.category_name}`);
+  L.push(`- 카테고리: ${p.category_name} (${trackOf(p.track).label} 트랙)`);
   L.push(`- 담당: ${p.owner_name}`);
   L.push(`- 현재 단계: ${STAGE_LABELS[p.stage]} · 상태: ${STATUS_LABEL[p.status] ?? p.status}`);
   if (p.target_venue) L.push(`- 목표 학회/저널: ${p.target_venue}`);
   if (p.deadline) L.push(`- 마감: ${p.deadline}`);
   if (p.tags) L.push(`- 태그: ${p.tags}`);
-  L.push(`- 기록 ${p.entry_count}건 · 완료 단계 ${p.stage_done}/${STAGES.length} · 미완료 할 일 ${p.open_tasks}건`);
+  L.push(`- 기록 ${p.entry_count}건 · 완료 단계 ${p.stage_done}/${stageIds(p.track).length} · 미완료 할 일 ${p.open_tasks}건`);
   L.push(`- 생성일: ${fmtDateTime(p.created_at, tz)} · 보고서 생성: ${fmtDateTime(d.generated_at, tz)}`);
   if (d.from || d.to) L.push(`- 기간: ${d.from ?? "처음"} ~ ${d.to ?? "현재"}`);
   L.push("");
@@ -98,6 +101,21 @@ export function projectReportMarkdown(d: ProjectReportData, tz: string): string 
     L.push("");
     L.push(s.summary?.trim() ? s.summary.trim() : `_(아직 정리되지 않음 · ${STAGE_HINTS[s.stage as Stage]})_`);
     L.push("");
+  }
+  if (d.evaluations.length) {
+    const rubric = trackOf(p.track).rubric;
+    const max = rubric.reduce((a, x) => a + x.max, 0);
+    L.push("## 평가·피드백 (평가자 → 팀 답변)");
+    L.push("");
+    for (const ev of d.evaluations) {
+      let sc: Record<string, number> = {};
+      try { sc = JSON.parse(ev.scores || "{}"); } catch {}
+      L.push(`### ${ev.title} — ${STAGE_LABELS[ev.stage] ?? ev.stage} · ${ev.evaluator_name} · ${fmtDateTime(ev.created_at, tz)}${ev.total !== null ? ` · **${ev.total}/${max}**` : ""}`);
+      if (Object.keys(sc).length) L.push("", "| 축 | 점수 |", "|---|---|", ...rubric.filter((a) => sc[a.id] !== undefined).map((a) => `| ${a.label} | ${sc[a.id]}/${a.max} |`));
+      if (ev.feedback) L.push("", ev.feedback);
+      if (ev.response) L.push("", `> **팀 답변** (${ev.response_by_name ?? ""}, ${fmtDateTime(ev.response_at, tz)})`, ...ev.response.split("\n").map((l) => `> ${l}`));
+      L.push("");
+    }
   }
   if (p.tasks.length) {
     L.push("## 할 일");
@@ -203,7 +221,7 @@ export function projectReportHtml(d: ProjectReportData, env: Env): string {
     ${p.target_venue ? `<div><b>목표</b> ${escapeHtml(p.target_venue)}</div>` : ""}
     ${p.deadline ? `<div><b>마감</b> ${p.deadline}</div>` : ""}
     ${p.tags ? `<div><b>태그</b> ${escapeHtml(p.tags)}</div>` : ""}
-    <div><b>기록</b> ${p.entry_count}건 · 완료 단계 ${p.stage_done}/${STAGES.length} · 미완료 할 일 ${p.open_tasks}건</div>
+    <div><b>기록</b> ${p.entry_count}건 · 완료 단계 ${p.stage_done}/${stageIds(p.track).length} · 미완료 할 일 ${p.open_tasks}건</div>
     <div><b>생성</b> ${fmtDateTime(p.created_at, tz)}</div>
     <div><b>보고서</b> ${fmtDateTime(d.generated_at, tz)}${d.from || d.to ? ` · 기간 ${d.from ?? "처음"} ~ ${d.to ?? "현재"}` : ""}</div>
   </div>`);
@@ -212,6 +230,21 @@ export function projectReportHtml(d: ProjectReportData, env: Env): string {
   for (const s of p.stages) {
     H.push(`<div class="stage"><h3>${STAGE_LABELS[s.stage as Stage]} <span class="pill ${s.status}">${STAGE_STATUS_LABEL[s.status] ?? s.status}</span>${s.entry_count ? `<span class="pill">기록 ${s.entry_count}</span>` : ""}</h3>
       <div class="md">${s.summary?.trim() ? renderMarkdown(s.summary) : `<p class="empty">아직 정리되지 않음 · ${STAGE_HINTS[s.stage as Stage]}</p>`}</div></div>`);
+  }
+  if (d.evaluations.length) {
+    const rubric = trackOf(p.track).rubric;
+    const max = rubric.reduce((a, x) => a + x.max, 0);
+    H.push(`<h2>평가·피드백 (평가자 → 팀 답변)</h2>`);
+    for (const ev of d.evaluations) {
+      let sc: Record<string, number> = {};
+      try { sc = JSON.parse(ev.scores || "{}"); } catch {}
+      H.push(`<div class="stage"><h3>${escapeHtml(ev.title)} <span class="pill">${escapeHtml(STAGE_LABELS[ev.stage] ?? ev.stage)}</span>${ev.total !== null ? `<span class="pill appr">${ev.total}/${max}</span>` : ""}</h3>
+        <div class="tiny" style="color:var(--muted)">${escapeHtml(ev.evaluator_name)} · ${fmtDateTime(ev.created_at, tz)}</div>
+        ${Object.keys(sc).length ? `<table class="md"><thead><tr>${rubric.filter((a) => sc[a.id] !== undefined).map((a) => `<th>${escapeHtml(a.label)}</th>`).join("")}</tr></thead><tbody><tr>${rubric.filter((a) => sc[a.id] !== undefined).map((a) => `<td>${sc[a.id]}/${a.max}</td>`).join("")}</tr></tbody></table>` : ""}
+        <div class="md">${renderMarkdown(ev.feedback)}</div>
+        ${ev.response ? `<div class="comments"><b>팀 답변</b> <span style="color:var(--muted)">${escapeHtml(ev.response_by_name ?? "")} · ${fmtDateTime(ev.response_at, tz)}</span><div class="md">${renderMarkdown(ev.response)}</div></div>` : ""}
+      </div>`);
+    }
   }
   if (p.tasks.length) {
     H.push(`<h2>할 일</h2><ul class="tasks">`);
@@ -272,7 +305,7 @@ export async function categoryReport(env: Env, ctx: AuthContext, categoryId: str
     if (cat.description) L.push(cat.description, "");
     for (const p of projects) {
       const es = (byProject.get(p.id) ?? []).slice().reverse();
-      L.push(`## ${p.title}`, "", `- 담당 ${p.owner_name} · ${STAGE_LABELS[p.stage]} · ${STATUS_LABEL[p.status] ?? p.status} · 완료 단계 ${p.stage_done}/${STAGES.length}${p.deadline ? ` · 마감 ${p.deadline}` : ""}${p.target_venue ? ` · ${p.target_venue}` : ""}`, "");
+      L.push(`## ${p.title}`, "", `- 담당 ${p.owner_name} · ${STAGE_LABELS[p.stage]} · ${STATUS_LABEL[p.status] ?? p.status} · 완료 단계 ${p.stage_done}/${stageIds(p.track).length}${p.deadline ? ` · 마감 ${p.deadline}` : ""}${p.target_venue ? ` · ${p.target_venue}` : ""}`, "");
       if (p.summary) L.push(p.summary, "");
       if (es.length) {
         for (const e of es) {
@@ -292,7 +325,7 @@ export async function categoryReport(env: Env, ctx: AuthContext, categoryId: str
   if (cat.description) H.push(`<div class="summary md">${renderMarkdown(cat.description)}</div>`);
   for (const p of projects) {
     const es = (byProject.get(p.id) ?? []).slice().reverse();
-    const pct = Math.round((p.stage_done / STAGES.length) * 100);
+    const pct = Math.round((p.stage_done / stageIds(p.track).length) * 100);
     H.push(`<div class="proj"><h3>${escapeHtml(p.title)}</h3>
       <div class="row">${escapeHtml(p.owner_name)} · <span class="pill">${STAGE_LABELS[p.stage]}</span> ${STATUS_LABEL[p.status] ?? p.status}${p.deadline ? ` · 마감 ${p.deadline}` : ""}${p.target_venue ? ` · ${escapeHtml(p.target_venue)}` : ""}</div>
       <div class="bar"><i style="width:${pct}%"></i></div>

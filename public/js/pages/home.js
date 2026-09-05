@@ -5,6 +5,7 @@ export function projectCard(p, { showOwner = true, compact = false } = {}) {
   const card = h("a.card.hover.pcard" + (compact ? ".pad-s" : ""), { href: `#/project/${p.id}` },
     h("div.row.between.top",
       pill(stageLabel(p.stage), p.status === "active" ? "" : "mute"),
+      p.track === "capstone" ? pill("캡스톤", "gold sm") : null,
       h("span.spacer"),
       p.review_requested ? pill(`검토 ${p.review_requested}`, "bad sm") : null,
       p.status !== "active" ? pill(STATUS_LABEL[p.status], "mute sm") : null,
@@ -44,8 +45,10 @@ export function quickLogForm(projects, { onSaved, defaultProject } = {}) {
   if (!projects.length) return h("div.empty", "기록할 프로젝트가 없습니다. 먼저 팀 페이지에서 프로젝트를 만드세요.");
   const proj = select(projects.map((p) => ({ value: p.id, label: `${p.title} (${stageLabel(p.stage)})` })), { value: defaultProject || projects[0].id });
   const date = input({ type: "date", value: today(), max: "2099-12-31" });
-  const stage = stageSelect(projects.find((p) => p.id === proj.value)?.stage || "planning");
-  proj.addEventListener("change", () => { const p = projects.find((x) => x.id === proj.value); if (p) stage.value = p.stage; });
+  const stageWrap = h("div");
+  let stage = stageSelect(projects[0]?.stage, [], projects[0]?.track);
+  stageWrap.append(stage);
+  proj.addEventListener("change", () => { const p = projects.find((x) => x.id === proj.value); if (p) { stage = stageSelect(p.stage, [], p.track); mount(stageWrap, stage); } });
   const title = input({ placeholder: "한 줄 제목 — 예: ResNet-50 baseline, CIFAR-10 acc 91.2%", maxlength: 200 });
   const content = textarea({ placeholder: "## 한 일\n- \n\n## 결과\n- \n\n## 다음 할 일\n- [ ] \n\n## 메모\n- ", rows: 8 });
   const review = h("input", { type: "checkbox" });
@@ -64,7 +67,7 @@ export function quickLogForm(projects, { onSaved, defaultProject } = {}) {
     },
   },
     h("div.form-grid",
-      field("프로젝트", proj), field("연구일", date), field("단계", stage),
+      field("프로젝트", proj), field("연구일", date), field("단계", stageWrap),
     ),
     field("제목", title),
     field("내용 (마크다운)", content, "## 한 일 / ## 결과 / ## 다음 할 일 / ## 메모 구조를 권장합니다. 표(|)·코드(```)·체크박스(- [ ]) 지원."),
@@ -135,7 +138,7 @@ export function newProjectDialog(me, categoryId, categoryName) {
   modal({
     title: "새 논문 프로젝트",
     body: h("div.stack", field("카테고리", cat), field("제목", title), field("연구 요약", summary), h("div.form-grid", field("목표 학회/저널", venue), field("마감", deadline)), field("태그", tags),
-      h("p.help", "논문은 기획 → 리서치 → 관련기법 → 실험결과 → 논문작성 → 검토·투고 순서로 진행됩니다. 기획 단계에서 시작하며, 프로젝트 화면의 [다음 단계로] 버튼으로 넘어갑니다.")),
+      h("p.help", "논문 트랙: 기획 → 리서치 → 관련기법 → 실험결과 → 논문작성 → 검토·투고. 캡스톤 트랙: 주제·문제 발견 → 시장·사업모델 → MVP 빌드·배포 → 피드백·개선 → 사업성·최종보고 → 최종 발표. 첫 단계에서 시작하며 프로젝트 화면의 [다음 단계로] 버튼으로 넘어갑니다. 팀 프로젝트는 만든 뒤 [팀] 탭에서 협업자를 추가하세요.")),
     actions: [{ label: "취소" }, { label: "만들기", cls: "primary", onClick: async () => {
       if (!title.value.trim()) { toast("제목을 입력하세요", true); return false; }
       const p = await post("/api/projects", { category_id: cat.value, title: title.value.trim(), summary: summary.value, target_venue: venue.value, deadline: deadline.value || null, tags: tags.value });

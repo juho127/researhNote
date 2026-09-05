@@ -15,9 +15,13 @@ categories 1 ──< memberships >── 1 users 1 ──< tokens
 
 | 테이블 | 핵심 컬럼 | 비고 |
 |---|---|---|
-| `categories` | `id`(slug), `name` UNIQUE, `description`, `archived_at` | 연구 그룹/팀. 보관 시 구성원 접근 차단 |
+| `categories` | `id`(slug), `name` UNIQUE, `description`, `track` paper\|capstone, `join_policy` open\|approval\|closed, `archived_at` | 연구 그룹/팀. 트랙이 단계·루브릭을 결정. 보관 시 구성원 접근 차단 |
+| `project_collaborators` | (`project_id`,`user_id`) PK | 담당자와 같은 편집 권한 (캡스톤 팀원·공저자) |
+| `evaluations` | `project_id`, `stage`, `evaluator_id`, `title`, `scores`(JSON {축: 점수}), `total`, `feedback`(md), `response`(md), `response_by`, `visible` | 마일스톤별 평가자 채점·피드백 + 팀 답변. 평가자 여러 명 가능 |
+| `join_requests` | `user_id`, `category_id`, `message`, `status` pending\|approved\|rejected\|cancelled | 로비 가입 요청 |
+| `signup_requests` | `name`, `email`, `category_id`, `status`, `claim_hash`, `user_id`, `claimed_at` | 공개 토큰 발급 신청 |
 | `users` | `id`(slug), `name`, `email`, `role` admin\|member, `disabled_at`, `last_seen_at` | 전역 역할은 admin/member 두 가지 |
-| `memberships` | (`user_id`,`category_id`) PK, `role` lead\|member | 카테고리별 역할 |
+| `memberships` | (`user_id`,`category_id`) PK, `role` lead\|member\|evaluator | 카테고리별 역할. 평가자는 열람·코멘트·평가만 |
 | `tokens` | `token_hash` SHA-256 UNIQUE, `hint` `rn_abcd…wxyz`, `label`, `last_used_at`, `revoked_at` | 평문 미저장. 한 사용자가 여러 토큰 가능 |
 | `projects` | `category_id`, `owner_id`, `title`, `summary`, `stage`(현재 단계), `status` active\|paused\|done\|archived, `target_venue`, `deadline`, `tags`(쉼표) | |
 | `project_stages` | (`project_id`,`stage`) PK, `status` todo\|doing\|done, `summary`(md), `updated_by` | 프로젝트 생성 시 6행 생성 (`ensureStageRows`) |

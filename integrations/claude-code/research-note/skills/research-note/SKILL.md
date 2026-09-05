@@ -12,9 +12,10 @@ description: 연구노트(Research Note) 플랫폼에 논문 진행 상황을 �
 
 | 개념 | 설명 |
 |---|---|
-| 카테고리 | 연구 그룹/팀. 같은 카테고리 구성원은 서로의 프로젝트를 보고 코멘트·검토한다 |
-| 프로젝트 | 논문 하나. 현재 단계(stage)·상태(active/paused/done)·목표 학회·마감 |
-| 단계 (stage) | `planning` 기획 → `literature` 리서치 → `method` 관련기법 → `experiment` 실험결과 → `writing` 논문작성 → `review` 검토·투고. **한 줄 흐름**: 현재 단계 앞은 완료, 뒤는 예정 (자동) |
+| 카테고리 | 연구 그룹/팀. **트랙**(논문 `paper` / 캡스톤 `capstone`)을 가지며 같은 카테고리 구성원은 서로의 프로젝트를 보고 코멘트·검토한다. 역할: 리드 / 구성원 / 평가자(여러 명 가능) |
+| 프로젝트 | 논문 또는 캡스톤 프로젝트 하나. 카테고리의 트랙을 물려받음. 담당자 + 협업자(캡스톤 팀원·공저자)가 편집. 현재 단계(stage)·상태(active/paused/done)·목표·마감 |
+| 단계 (stage) | 논문: `planning` 기획 → `literature` 리서치 → `method` 관련기법 → `experiment` 실험결과 → `writing` 논문작성 → `review` 검토·투고. 캡스톤: `topic` 주제·문제 발견 → `market` 시장·사업모델 → `mvp` MVP 빌드·배포 → `feedback` 피드백·개선 → `business` 사업성·최종보고 → `final` 최종 발표. **한 줄 흐름**: 현재 단계 앞은 완료, 뒤는 예정 (자동). 프로젝트 트랙에 맞는 단계만 유효 |
+| 평가 | 마일스톤(단계)별로 평가자들이 루브릭 점수 + 피드백을 남기고 팀이 답변. `list_evaluations` / `add_evaluation`(평가자) / `respond_evaluation`(팀) |
 | 단계별 정리 | 각 단계의 **누적 결론** (마크다운). 논문 해당 절의 뼈대. `update_stage` 로 갱신. 다음 단계로 넘어갈 때는 `advance_stage` |
 | 기록 (entry) | **날짜별** 진행 로그. `log_progress` 로 추가. 팀원이 코멘트·검토 |
 | 할 일 (task) | 다음 할 일. `add_task` / `update_task` |
@@ -55,7 +56,7 @@ description: 연구노트(Research Note) 플랫폼에 논문 진행 상황을 �
 ```
 
    - `title` 은 결과가 드러나게 한 줄로: "ResNet-50 baseline, CIFAR-10 acc 91.2%" (좋음) / "실험" (나쁨)
-   - `stage` 는 작업 성격으로 고른다. 실험 코드 작성은 `method`, 실행·결과 분석은 `experiment`.
+   - `stage` 는 작업 성격으로 고른다. 논문: 실험 코드 작성은 `method`, 실행·결과 분석은 `experiment`. 캡스톤: 린 캔버스·TAM-SAM-SOM 은 `market`, 구현·배포는 `mvp`, 사용자 테스트·지표·회고는 `feedback`. 캡스톤 기록 제목에는 루프 번호를 붙이면 좋다 ("루프 2: 온보딩 화면 개선 후 전환율 12%→19%").
    - `date` 는 실제 연구일. 어제 한 일을 오늘 기록하면 어제 날짜.
 4. 누적 결론이 바뀌었으면 `update_stage` 로 해당 단계 정리를 갱신한다. **덮어쓰기**이므로 기존 정리를 읽고 병합한 전체 텍스트를 보낸다. 단계가 실질적으로 끝나 다음으로 넘어가야 하면 사용자에게 확인한 뒤 `advance_stage` (생략 시 다음 단계, `to` 로 특정 단계·되돌리기). 마지막 단계에서 `advance_stage` 는 논문 완료 처리다.
 5. "다음 할 일" 항목은 `add_task` 로 등록한다. 이미 있는 할 일이 끝났으면 `update_task status=done`.
@@ -67,6 +68,7 @@ description: 연구노트(Research Note) 플랫폼에 논문 진행 상황을 �
 - 팀 상황: `team_overview`(구성원·프로젝트·검토 대기), `team_feed`(최근 활동)
 - 특정 기록 읽기: `list_entries` → `get_entry` (코멘트 포함)
 - 팀원 기록에 의견: `add_comment`. 리드/관리자만 `kind: approve | request_changes`
+- 평가: 사용자가 평가자(리드·평가자·관리자)이면 `list_evaluations` 로 루브릭을 확인하고 `add_evaluation` 으로 점수·피드백을 남긴다. 사용자가 팀이면 `list_evaluations` 로 받은 피드백을 읽고 `respond_evaluation` 으로 답변(반영 계획)을 남긴다. 다음 보고서에는 "평가의견 답변"을 첨부한다.
 - 보고서: `get_report` (마크다운). 주간 미팅 준비 시 `from`/`to` 로 기간 지정
 
 ## 작성 원칙

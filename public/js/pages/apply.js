@@ -30,7 +30,7 @@ export async function renderApply(container) {
   }
   const name = input({ placeholder: "홍길동", maxlength: 100, autocomplete: "name" });
   const email = input({ type: "email", placeholder: "you@univ.ac.kr (선택, 승인 안내에 사용)", maxlength: 200, autocomplete: "email" });
-  const cat = select([{ value: "", label: "미정 (관리자가 배정)" }, ...cfg.categories.map((c) => ({ value: c.id, label: c.name }))], { value: cfg.categories[0]?.id || "" });
+  const cat = select([{ value: "", label: "미정 (관리자가 배정)" }, ...cfg.categories.map((c) => ({ value: c.id, label: `${c.name}${c.track === "capstone" ? " (캡스톤)" : ""}` }))], { value: cfg.categories[0]?.id || "" });
   const note = textarea({ placeholder: "학번 · 과정(석사/박사/학부연구생) · 지도교수 · 연구 주제 등", rows: 3, maxlength: 500 });
   const code = input({ placeholder: "연구책임자가 알려준 신청 코드", autocomplete: "off" });
   const btn = h("button.btn.primary", { type: "submit" }, "신청하기");

@@ -1,4 +1,4 @@
-import { state, get, post, patch, put, del, h, mount, clear, pill, avatar, stages, stageLabel, stageHint, stageIndex, stageSelect, fmtRel, fmtDT, weekday, today, daysAgo, input, textarea, field, select, modal, confirmDialog, toast, errToast, mdEl, openReport, downloadFile, projectProgress, STATUS_LABEL, STAGE_STATUS_LABEL, REVIEW_LABEL, REVIEW_CLASS } from "../core.js";
+import { state, get, post, patch, put, del, h, mount, clear, pill, avatar, stages, stageLabel, stageHint, stageMilestone, stageIndex, stageSelect, track as trackDef, ROLE_LABEL, fmtRel, fmtDT, weekday, today, daysAgo, input, textarea, field, select, modal, confirmDialog, toast, errToast, mdEl, openReport, downloadFile, projectProgress, STATUS_LABEL, STAGE_STATUS_LABEL, REVIEW_LABEL, REVIEW_CLASS } from "../core.js";
 
 let current = null; // { project, tab, filters }
 
@@ -19,13 +19,14 @@ function draw(container) {
   const p = current.project;
   const me = state.me;
   const header = h("header.hero", { style: { padding: "20px 0 16px" } },
-    h("div.eyebrow", h("a", { href: `#/team/${p.category_id}` }, p.category_name), " · ", STATUS_LABEL[p.status]),
+    h("div.eyebrow", h("a", { href: `#/team/${p.category_id}` }, p.category_name), " · ", p.track_label || "논문", " 트랙 · ", STATUS_LABEL[p.status]),
     h("div.row.between.top",
       h("div", { style: { flex: 1, minWidth: "260px" } },
         h("h1", p.title),
         p.summary ? h("p.sub", { style: { maxWidth: "760px" } }, p.summary) : null,
         h("div.row", { style: { marginTop: "10px", gap: "8px" } },
           h("span.row", { style: { gap: "5px" } }, avatar(p.owner_name), p.owner_name),
+          ...(p.collaborators || []).map((c) => h("span.row", { style: { gap: "5px" }, title: "협업자" }, avatar(c.name), c.name)),
           p.target_venue ? h("span.tag", p.target_venue) : null,
           p.deadline ? h("span.tag", `마감 ${p.deadline}`) : null,
           ...(p.tags ? p.tags.split(",").filter(Boolean).map((t) => h("span.tag", "#" + t.trim())) : []),
@@ -42,13 +43,13 @@ function draw(container) {
       h("div.stepper", { style: { flex: 1 } }, p.stages.map((s) => h("div.step." + s.status + (p.stage === s.stage ? ".current" : ""), {
         title: stageHint(s.stage) + " · 클릭: 단계별 정리",
         onclick: () => { current.tab = "stages"; current.focusStage = s.stage; draw(container); },
-      }, h("div.s-l", stageLabel(s.stage)), h("div.s-s", STAGE_STATUS_LABEL[s.status], s.entry_count ? ` · 기록 ${s.entry_count}` : null)))),
+      }, h("div.s-l", stageLabel(s.stage)), h("div.s-s", STAGE_STATUS_LABEL[s.status], s.entry_count ? ` · 기록 ${s.entry_count}` : null), stageMilestone(s.stage) ? h("div.tiny", { style: { color: "var(--gold)", marginTop: "2px" } }, "⏱ " + stageMilestone(s.stage)) : null))),
       p.can_edit && p.status !== "archived" ? advanceButton(p, container) : null,
     ),
   );
 
   const tabs = h("div.tabs");
-  const tabDefs = [["timeline", "타임라인", p.entry_count], ["stages", "단계별 정리", p.stage_done + "/" + p.stages.length], ["tasks", "할 일", p.open_tasks], ["members", "팀"]];
+  const tabDefs = [["timeline", "타임라인", p.entry_count], ["stages", "단계별 정리", p.stage_done + "/" + p.stages.length], ["tasks", "할 일", p.open_tasks], ["evaluations", "평가·피드백"], ["members", "팀"]];
   for (const [k, l, n] of tabDefs) tabs.append(h("button", { class: current.tab === k ? "active" : "", onclick: () => { current.tab = k; draw(container); } }, l, n !== undefined && n !== null ? h("span.n", String(n)) : null));
 
   const body = h("div");
@@ -56,28 +57,33 @@ function draw(container) {
   if (current.tab === "timeline") renderTimeline(body, container);
   else if (current.tab === "stages") renderStages(body, container);
   else if (current.tab === "tasks") renderTasks(body, container);
-  else renderMembers(body);
+  else if (current.tab === "evaluations") renderEvaluations(body, container);
+  else renderMembers(body, container);
 }
 
 /** 헤더의 "다음 단계로 →" (마지막 단계면 "논문 완료") */
 function advanceButton(p, container) {
-  const idx = stageIndex(p.stage);
-  const last = idx >= stages().length - 1;
-  if (p.status === "done") return h("div.row", { style: { alignItems: "center" } }, pill("논문 완료", "ok"), h("button.btn.sm", { onclick: () => advance(p, container, "review") }, "검토 단계로 되돌리기"));
-  const next = last ? null : stages()[idx + 1];
-  return h("button.btn.mint", { style: { alignSelf: "center", whiteSpace: "nowrap" }, title: last ? "검토·투고를 마치고 논문을 완료 처리합니다" : `${stageLabel(p.stage)} 완료 → ${next.label}`, onclick: () => advance(p, container) }, last ? "논문 완료 ✓" : `다음 단계로: ${next.label} →`);
+  const list = stages(p.track);
+  const noun = p.track_noun || "논문";
+  const idx = stageIndex(p.stage, p.track);
+  const last = idx >= list.length - 1;
+  if (p.status === "done") return h("div.row", { style: { alignItems: "center" } }, pill(`${noun} 완료`, "ok"), h("button.btn.sm", { onclick: () => advance(p, container, list[list.length - 1].id) }, `${list[list.length - 1].label} 단계로 되돌리기`));
+  const next = last ? null : list[idx + 1];
+  return h("button.btn.mint", { style: { alignSelf: "center", whiteSpace: "nowrap" }, title: last ? `${list[idx].label}을(를) 마치고 ${noun}을(를) 완료 처리합니다` : `${stageLabel(p.stage)} 완료 → ${next.label}`, onclick: () => advance(p, container) }, last ? `${noun} 완료 ✓` : `다음 단계로: ${next.label} →`);
 }
 
 async function advance(p, container, to) {
-  const idx = stageIndex(p.stage);
-  const last = idx >= stages().length - 1;
+  const list = stages(p.track);
+  const noun = p.track_noun || "논문";
+  const idx = stageIndex(p.stage, p.track);
+  const last = idx >= list.length - 1;
   const msg = to
-    ? `현재 단계를 ${stageLabel(to)}(으)로 옮길까요? ${stageIndex(to) < idx ? "그 뒤 단계들은 다시 '예정'이 됩니다 (정리 내용은 유지)." : "그 앞 단계들은 완료로 표시됩니다."}`
-    : last ? "검토·투고를 마치고 논문을 완료 처리할까요? (모든 단계 완료, 상태 '완료')" : `${stageLabel(p.stage)} 단계를 완료하고 ${stages()[idx + 1].label} 단계로 넘어갈까요?`;
+    ? `현재 단계를 ${stageLabel(to)}(으)로 옮길까요? ${stageIndex(to, p.track) < idx ? "그 뒤 단계들은 다시 '예정'이 됩니다 (정리 내용은 유지)." : "그 앞 단계들은 완료로 표시됩니다."}`
+    : last ? `${list[idx].label}을(를) 마치고 ${noun}을(를) 완료 처리할까요? (모든 단계 완료, 상태 '완료')` : `${stageLabel(p.stage)} 단계를 완료하고 ${list[idx + 1].label} 단계로 넘어갈까요?`;
   if (!(await confirmDialog(msg, { okLabel: to ? "이동" : last ? "완료" : "다음 단계로" }))) return;
   try {
     await post(`/api/projects/${p.id}/advance`, to ? { to } : {});
-    toast(to ? `${stageLabel(to)} 단계로 이동했습니다` : last ? "논문을 완료 처리했습니다" : `${stages()[idx + 1].label} 단계로 넘어갔습니다`);
+    toast(to ? `${stageLabel(to)} 단계로 이동했습니다` : last ? `${noun}을(를) 완료 처리했습니다` : `${list[idx + 1].label} 단계로 넘어갔습니다`);
     reload(container);
   } catch (e) { errToast(e); }
 }
@@ -91,7 +97,7 @@ async function renderTimeline(body, container) {
   if (current.reviewFilter) qs.set("review_status", current.reviewFilter);
   const entries = await get(`/api/projects/${p.id}/entries?${qs}`);
 
-  const stageSel = select([{ value: "", label: "모든 단계" }, ...stages().map((s) => ({ value: s.id, label: s.label }))], { value: current.stageFilter, onchange: (e) => { current.stageFilter = e.target.value; renderTimeline(body, container); } });
+  const stageSel = select([{ value: "", label: "모든 단계" }, ...stages(p.track).map((s) => ({ value: s.id, label: s.label }))], { value: current.stageFilter, onchange: (e) => { current.stageFilter = e.target.value; renderTimeline(body, container); } });
   const reviewSel = select([{ value: "", label: "모든 검토 상태" }, { value: "requested", label: "검토 요청" }, { value: "changes_requested", label: "수정 요청" }, { value: "approved", label: "승인" }], { value: current.reviewFilter, onchange: (e) => { current.reviewFilter = e.target.value; renderTimeline(body, container); } });
   const toolbar = h("div.row", { style: { marginBottom: "14px" } }, h("div", { style: { width: "160px" } }, stageSel), h("div", { style: { width: "170px" } }, reviewSel), h("span.spacer"), h("span.small.muted", `${entries.length}건`));
 
@@ -179,7 +185,7 @@ function reviewDialog(e, status, container) {
 
 export function entryEditor(p, e, container) {
   const date = input({ type: "date", value: e?.date || today() });
-  const stage = stageSelect(e?.stage || p.stage);
+  const stage = stageSelect(e?.stage || p.stage, [], p.track);
   const title = input({ value: e?.title || "", placeholder: "한 줄 제목 — 결과가 드러나게", maxlength: 200 });
   const content = textarea({ rows: 14, value: e?.content ?? "## 한 일\n- \n\n## 결과\n- \n\n## 다음 할 일\n- [ ] \n\n## 메모\n- " });
   const review = h("input", { type: "checkbox", checked: e?.review_status === "requested" });
@@ -212,11 +218,12 @@ export function entryEditor(p, e, container) {
 function renderStages(body, container) {
   const p = current.project;
   const grid = h("div.stack");
-  const curIdx = stageIndex(p.stage);
-  const lastIdx = stages().length - 1;
+  const curIdx = stageIndex(p.stage, p.track);
+  const lastIdx = stages(p.track).length - 1;
+  const noun = p.track_noun || "논문";
   for (const s of p.stages) {
     const isCurrent = p.stage === s.stage && p.status !== "done";
-    const idx = stageIndex(s.stage);
+    const idx = stageIndex(s.stage, p.track);
     const ta = textarea({ value: s.summary || "", rows: Math.max(4, Math.min(18, (s.summary || "").split("\n").length + 2)), placeholder: `${stageLabel(s.stage)} 단계의 누적 정리 — ${stageHint(s.stage)}. 논문 해당 절의 뼈대가 되도록 마크다운으로.`, disabled: !p.can_edit });
     const view = mdEl(s.summary || "");
     const editing = h("div.stack", { style: { display: "none" } }, ta);
@@ -229,7 +236,7 @@ function renderStages(body, container) {
     let flowBtn = null;
     if (p.can_edit && p.status !== "archived") {
       if (p.status === "done") flowBtn = h("button.btn.sm", { onclick: () => advance(p, container, s.stage) }, "이 단계로 되돌리기");
-      else if (isCurrent) flowBtn = h("button.btn.sm.mint", { onclick: () => advance(p, container) }, idx >= lastIdx ? "논문 완료 ✓" : "다음 단계로 →");
+      else if (isCurrent) flowBtn = h("button.btn.sm.mint", { onclick: () => advance(p, container) }, idx >= lastIdx ? `${noun} 완료 ✓` : "다음 단계로 →");
       else if (idx < curIdx) flowBtn = h("button.btn.sm", { onclick: () => advance(p, container, s.stage) }, "이 단계로 되돌리기");
       else flowBtn = h("button.btn.sm", { onclick: () => advance(p, container, s.stage) }, "여기까지 진행");
     }
@@ -238,6 +245,7 @@ function renderStages(body, container) {
       h("div.sc-h", h("h3", `${idx + 1}. ${stageLabel(s.stage)}`), statusPill, isCurrent ? pill("현재", "navy sm") : null, s.entry_count ? h("a.tiny.muted", { href: "#", onclick: (ev) => { ev.preventDefault(); current.tab = "timeline"; current.stageFilter = s.stage; draw(container); } }, `기록 ${s.entry_count}건 보기`) : null, h("span.spacer"),
         p.can_edit ? [flowBtn, editBtn, save] : null),
       h("div.hint", stageHint(s.stage), s.updated_by ? ` · 갱신 ${fmtRel(s.updated_at)}` : ""),
+      stageMilestone(s.stage) ? h("div.tiny", { style: { color: "var(--gold)", fontWeight: 700 } }, "⏱ 마일스톤: " + stageMilestone(s.stage)) : null,
       s.summary ? view : h("div.small.muted", { style: { fontStyle: "italic" } }, "아직 정리되지 않았습니다."),
       editing,
     );
@@ -245,7 +253,7 @@ function renderStages(body, container) {
     if (current.focusStage === s.stage) { setTimeout(() => card.scrollIntoView({ block: "center", behavior: "smooth" }), 50); current.focusStage = null; }
     grid.append(card);
   }
-  mount(body, h("p.small.muted", { style: { margin: "0 0 12px" } }, "논문은 한 흐름으로 진행됩니다: 현재 단계 앞은 완료, 뒤는 예정. 각 단계의 누적 결론을 여기에 정리하세요 (보고서와 초고의 뼈대). 단계가 끝나면 [다음 단계로 →]. AI 도구(MCP)의 update_stage / advance_stage 로도 갱신됩니다."), grid);
+  mount(body, h("p.small.muted", { style: { margin: "0 0 12px" } }, `${p.track_label || "논문"} 트랙은 한 흐름으로 진행됩니다: 현재 단계 앞은 완료, 뒤는 예정. 각 단계의 누적 결론을 여기에 정리하세요 (보고서와 ${p.track === "capstone" ? "최종보고서" : "초고"}의 뼈대). 단계가 끝나면 [다음 단계로 →]. AI 도구(MCP)의 update_stage / advance_stage 로도 갱신됩니다.`), grid);
 }
 
 // ---------- 할 일 ----------
@@ -281,16 +289,106 @@ function taskEditor(t, p, container) {
   const title = input({ value: t.title });
   const due = input({ type: "date", value: t.due || "" });
   const assignee = select([{ value: "", label: "담당 없음" }, ...p.members.map((m) => ({ value: m.id, label: m.name }))], { value: t.assignee_id || "" });
-  const stage = stageSelect(t.stage || "", [{ value: "", label: "단계 없음" }]);
+  const stage = stageSelect(t.stage || "", [{ value: "", label: "단계 없음" }], p.track);
   modal({ title: "할 일 수정", body: h("div.stack", field("내용", title), h("div.form-grid", field("기한", due), field("담당", assignee), field("단계", stage))),
     actions: [{ label: "취소" }, { label: "저장", cls: "primary", onClick: async () => { await patch(`/api/tasks/${t.id}`, { title: title.value, due: due.value || null, assignee_id: assignee.value || null, stage: stage.value || null }); reload(container); } }] });
 }
 
-// ---------- 팀 ----------
-function renderMembers(body) {
+// ---------- 팀 (구성원 · 협업자) ----------
+function renderMembers(body, container) {
   const p = current.project;
-  mount(body, h("div.grid.c3", p.members.map((m) => h("div.card.pad-s", h("div.row", avatar(m.name), h("b", m.name), m.role === "lead" ? pill("리드", "gold sm") : null, m.id === p.owner_id ? pill("담당", "navy sm") : null)))),
-    h("p.small.muted", { style: { marginTop: "12px" } }, "같은 카테고리 구성원은 이 프로젝트의 기록을 읽고 코멘트할 수 있습니다. 기록 작성은 담당자·리드·관리자, 승인/수정요청은 리드·관리자."));
+  const me = state.me;
+  const collabIds = new Set((p.collaborators || []).map((c) => c.id));
+  const canManage = me.is_admin || p.can_review || p.owner_id === me.user.id;
+  const candidates = p.members.filter((m) => m.id !== p.owner_id && m.role !== "evaluator");
+  const boxes = candidates.map((m) => ({ m, cb: h("input", { type: "checkbox", checked: collabIds.has(m.id), disabled: !canManage }) }));
+  const save = canManage ? h("button.btn.sm.primary", { onclick: async () => {
+    try { await put(`/api/projects/${p.id}/collaborators`, { user_ids: boxes.filter((b) => b.cb.checked).map((b) => b.m.id) }); toast("협업자를 저장했습니다"); reload(container); } catch (e) { errToast(e); }
+  } }, "협업자 저장") : null;
+  mount(body,
+    h("div.card", h("div.row.between", h("h3", `협업자 ${p.collaborators?.length ? p.collaborators.length + "명" : ""}`), save),
+      h("p.small.muted", { style: { margin: "6px 0 10px" } }, p.track === "capstone" ? "캡스톤 팀원을 협업자로 추가하면 담당자와 똑같이 기록·단계 정리·할 일·평가 답변을 쓸 수 있습니다." : "공저자를 협업자로 추가하면 담당자와 똑같이 기록·단계 정리를 쓸 수 있습니다."),
+      boxes.length ? h("div.grid.c3", boxes.map((b) => h("label.check", b.cb, avatar(b.m.name), b.m.name, b.m.role === "lead" ? pill("리드", "gold sm") : null))) : h("div.small.muted", "추가할 수 있는 팀원이 없습니다 (같은 카테고리 구성원만)")),
+    h("div.section", h("div.section-h", h("h2", "카테고리 구성원")),
+      h("div.grid.c3", p.members.map((m) => h("div.card.pad-s", h("div.row", avatar(m.name), h("b", m.name), m.role === "lead" ? pill("리드", "gold sm") : m.role === "evaluator" ? pill("평가자", "ai sm") : null, m.id === p.owner_id ? pill("담당", "navy sm") : collabIds.has(m.id) ? pill("협업자", "ok sm") : null))))),
+    h("p.small.muted", { style: { marginTop: "12px" } }, "같은 카테고리 구성원은 이 프로젝트의 기록을 읽고 코멘트할 수 있습니다. 기록 작성은 담당자·협업자·리드·관리자, 승인/수정요청은 리드·관리자, 평가는 리드·평가자·관리자."),
+  );
+}
+
+// ---------- 평가·피드백 ----------
+async function renderEvaluations(body, container) {
+  const p = current.project;
+  const me = state.me;
+  mount(body, h("div.loading", h("span.spinner")));
+  const data = await get(`/api/projects/${p.id}/evaluations`);
+  const rubric = data.rubric || [];
+  const max = rubric.reduce((a, x) => a + x.max, 0);
+  const list = stages(p.track);
+  const groups = list.map((s) => ({ s, evs: data.evaluations.filter((e) => e.stage === s.id) })).filter((g) => g.evs.length || g.s.id === p.stage);
+  const head = h("div.row", { style: { marginBottom: "12px" } },
+    h("p.small.muted", { style: { margin: 0, flex: 1 } }, `평가자(리드·평가자·관리자, 여러 명 가능)가 마일스톤마다 루브릭으로 채점하고 피드백을 남기면 팀이 답변합니다. 루브릭: ${rubric.map((x) => `${x.label} ${x.max}`).join(" · ")} (만점 ${max})`),
+    p.can_evaluate ? h("button.btn.primary", { onclick: () => evaluationEditor(p, null, rubric, container) }, "+ 평가 작성") : null);
+  if (!data.evaluations.length) { mount(body, head, h("div.empty", p.can_evaluate ? "아직 평가가 없습니다. [+ 평가 작성]으로 첫 평가를 남기세요." : "아직 평가가 없습니다.")); return; }
+  const sections = [];
+  for (const g of groups) {
+    if (!g.evs.length) continue;
+    const sum = data.summary?.[g.s.id];
+    sections.push(h("div.section", { style: { marginTop: "18px" } },
+      h("div.section-h", h("h2", g.s.label), h("p.sub", `${g.evs.length}건${sum?.avg_total !== null && sum?.avg_total !== undefined ? ` · 평균 ${sum.avg_total}/${max}` : ""}${g.s.milestone ? ` · ⏱ ${g.s.milestone}` : ""}`)),
+      h("div.stack", g.evs.map((ev) => evaluationCard(ev, p, rubric, max, container))),
+    ));
+  }
+  mount(body, head, ...sections);
+}
+
+function evaluationCard(ev, p, rubric, max, container) {
+  const scored = rubric.filter((x) => ev.scores?.[x.id] !== undefined);
+  const scoreRow = scored.length ? h("div.row", { style: { gap: "6px", flexWrap: "wrap", margin: "6px 0" } }, scored.map((x) => h("span.tag", `${x.label} ${ev.scores[x.id]}/${x.max}`)), ev.total !== null ? pill(`합계 ${ev.total}/${max}`, "ok") : null) : null;
+  const respBox = h("div.comments", { style: { marginTop: "10px" } });
+  const drawResp = () => {
+    const ta = textarea({ value: ev.response || "", rows: 4, placeholder: "평가 의견에 대한 팀의 답변 · 반영 계획 · 반박 (마크다운). 다음 보고서에 '평가의견 답변'으로 첨부됩니다." });
+    const editing = h("div.stack", { style: { display: "none" } }, ta, h("div.row", { style: { justifyContent: "flex-end" } }, h("button.btn.sm.primary", { onclick: async () => { try { await post(`/api/evaluations/${ev.id}/respond`, { response: ta.value }); toast("답변을 저장했습니다"); renderEvaluations(container.querySelector(".tabs")?.nextSibling || container, container); } catch (e) { errToast(e); } } }, "답변 저장")));
+    const toggle = ev.can_respond ? h("button.btn.ghost.xs", { onclick: () => { editing.style.display = editing.style.display === "none" ? "" : "none"; if (editing.style.display === "") ta.focus(); } }, ev.response ? "답변 수정" : "답변 작성") : null;
+    mount(respBox, h("div.row", h("b", "팀 답변"), ev.response_by_name ? h("span.tiny.muted", `${ev.response_by_name} · ${fmtDT(ev.response_at)}`) : null, h("span.spacer"), toggle), ev.response ? mdEl(ev.response) : h("div.small.muted", "아직 답변이 없습니다"), editing);
+  };
+  drawResp();
+  return h("div.card.entry" + (ev.visible ? "" : ".rv-changes_requested"),
+    h("div.e-h", h("div.e-t", ev.title), ev.visible ? null : pill("초안 (팀 비공개)", "warn")),
+    h("div.e-m", avatar(ev.evaluator_name), h("span", ev.evaluator_name), h("span", "·"), h("span", fmtDT(ev.created_at)), ev.updated_at !== ev.created_at ? h("span.tiny", `(수정 ${fmtRel(ev.updated_at)})`) : null),
+    scoreRow,
+    ev.feedback ? mdEl(ev.feedback, "e-b md") : null,
+    h("div.e-actions", ev.can_edit ? h("button.btn.xs", { onclick: () => evaluationEditor(p, ev, rubric, container) }, "수정") : null,
+      ev.can_edit ? h("button.btn.xs.danger", { onclick: async () => { if (await confirmDialog("이 평가를 삭제할까요?", { danger: true, okLabel: "삭제" })) { await del(`/api/evaluations/${ev.id}`); toast("삭제했습니다"); reload(container); } } }, "삭제") : null),
+    respBox,
+  );
+}
+
+function evaluationEditor(p, ev, rubric, container) {
+  const stage = stageSelect(ev?.stage || p.stage, [], p.track);
+  const title = input({ value: ev?.title || "", placeholder: `예: ${stageMilestone(p.stage) || stageLabel(p.stage) + " 평가"}`, maxlength: 200 });
+  const inputs = rubric.map((x) => ({ x, el: input({ type: "number", min: 0, max: x.max, step: 0.5, value: ev?.scores?.[x.id] ?? "", placeholder: `0~${x.max}`, style: { width: "110px" } }) }));
+  const totalEl = h("span.pill.ok", "");
+  const recalc = () => { const vals = inputs.map((i) => i.el.value).filter((v) => v !== ""); totalEl.textContent = vals.length ? `합계 ${Math.round(vals.reduce((a, v) => a + Number(v), 0) * 10) / 10} / ${rubric.reduce((a, x) => a + x.max, 0)}` : "점수 없음"; };
+  inputs.forEach((i) => i.el.addEventListener("input", recalc)); recalc();
+  const feedback = textarea({ value: ev?.feedback || "", rows: 10, placeholder: "## 잘한 점\n- \n\n## 개선할 점\n- \n\n## 다음 마일스톤까지 권고\n- " });
+  const visible = h("input", { type: "checkbox", checked: ev ? ev.visible : true });
+  modal({
+    title: ev ? "평가 수정" : "평가 작성", wide: true,
+    body: h("div.stack",
+      h("div.form-grid", field("대상 단계(마일스톤)", stage), field("제목", title)),
+      h("div.field", h("span", "루브릭 점수 (비워도 됨)"), h("div.grid.c2", inputs.map((i) => h("div.row", i.el, h("div", h("div.small", { style: { fontWeight: 600 } }, `${i.x.label} (${i.x.max})`), i.x.hint ? h("div.tiny.muted", i.x.hint) : null)))), h("div", { style: { marginTop: "6px" } }, totalEl)),
+      field("피드백 (마크다운)", feedback),
+      h("label.check", visible, "팀에게 공개 (끄면 초안: 평가자·리드·관리자만 봄)"),
+    ),
+    actions: [{ label: "취소" }, { label: ev ? "저장" : "평가 저장", cls: "primary", onClick: async () => {
+      const scores = {}; for (const i of inputs) if (i.el.value !== "") scores[i.x.id] = Number(i.el.value);
+      const body = { stage: stage.value, title: title.value.trim(), scores, feedback: feedback.value, visible: visible.checked };
+      if (ev) await patch(`/api/evaluations/${ev.id}`, body); else await post(`/api/projects/${p.id}/evaluations`, body);
+      toast(ev ? "수정했습니다" : "평가를 저장했습니다");
+      current.tab = "evaluations";
+      reload(container);
+    } }],
+  });
 }
 
 // ---------- 프로젝트 수정 / 보고서 ----------
