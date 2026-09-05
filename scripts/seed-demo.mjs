@@ -26,18 +26,29 @@ const TEAM_A = argOf("--team-a") || process.env.SEED_CATEGORY_A;
 const TEAM_B = argOf("--team-b") || process.env.SEED_CATEGORY_B;
 
 (async () => {
-  const existing = await api(ADMIN, "GET", "/api/admin/categories?all=1");
-  if (existing.some((c) => c.name === "LLM 응용")) { console.log("이미 데모 데이터가 있습니다 (카테고리 'LLM 응용' 존재). 종료."); return; }
-
-  const llm = await api(ADMIN, "POST", "/api/admin/categories", { name: "LLM 응용", id: "llm", description: "대규모 언어모델을 금융·산업 문제에 적용하는 연구 그룹. RAG, 에이전트, 평가 방법론." });
-  const ts = await api(ADMIN, "POST", "/api/admin/categories", { name: "시계열 예측", id: "timeseries", description: "금융·에너지 시계열 예측과 인과추론." });
-
-  const mk = (name, id, cats, email = "") => api(ADMIN, "POST", "/api/admin/users", { name, id, email, categories: cats, issue_token: true });
-  const kim = await mk("김지원", "jiwon", [{ category_id: llm.id, role: "lead" }, { category_id: ts.id, role: "member" }], "jiwon@example.ac.kr");
+  const users = await api(ADMIN, "GET", "/api/admin/users");
+  const cats = await api(ADMIN, "GET", "/api/admin/categories?all=1");
+  const hasDemo = users.some((u) => u.id === "jiwon" || u.id === "seojun");
+  if (hasDemo) console.log("데모 연구원(jiwon/seojun)이 이미 있어 논문 팀 시드는 건너뜁니다 (캡스톤 팀만 확인).");
+  const pick = async (envId, fallback) => {
+    if (envId) {
+      const c = cats.find((x) => x.id === envId || x.name === envId);
+      if (!c) throw new Error(`카테고리를 찾을 수 없습니다: ${envId}`);
+      return c;
+    }
+    return cats.find((x) => x.name === fallback.name) || api(ADMIN, "POST", "/api/admin/categories", fallback);
+  };
+  const mk = (name, id, categories, email = "") => api(ADMIN, "POST", "/api/admin/users", { name, id, email, note: "데모 데이터 (seed-demo)", categories, issue_token: true });
+  let T = {}; let kim = null;
+  if (!hasDemo) {
+  const llm = await pick(TEAM_A, { name: "LLM 응용", id: "llm", description: "대규모 언어모델을 금융·산업 문제에 적용하는 연구 그룹. RAG, 에이전트, 평가 방법론." });
+  const ts = await pick(TEAM_B, { name: "시계열 예측", id: "timeseries", description: "금융·에너지 시계열 예측과 인과추론." });
+  console.log(`팀 A: ${llm.name} (${llm.id}) · 팀 B: ${ts.name} (${ts.id})`);
+  kim = await mk("김지원", "jiwon", [{ category_id: llm.id, role: "lead" }, { category_id: ts.id, role: "member" }], "jiwon@example.ac.kr");
   const lee = await mk("이서준", "seojun", [llm.id], "seojun@example.ac.kr");
   const park = await mk("박하은", "haeun", [llm.id, { category_id: ts.id, role: "lead" }], "haeun@example.ac.kr");
   const choi = await mk("최민재", "minjae", [ts.id], "minjae@example.ac.kr");
-  const T = { kim: kim.token, lee: lee.token, park: park.token, choi: choi.token };
+  T = { kim: kim.token, lee: lee.token, park: park.token, choi: choi.token };
 
   // ---- 프로젝트 1: 이서준 (LLM) — 실험 단계
   const p1 = await api(T.lee, "POST", "/api/projects", { category_id: llm.id, title: "금융 공시 문서 RAG 의 환각 억제: 근거 인용 강제 디코딩", summary: "RAG 답변에 근거 문단 인용을 강제하면 환각률이 얼마나 줄고 유용성은 얼마나 손해 보는가?", target_venue: "ACL 2027", deadline: d(-120), tags: "RAG,환각,금융" });
@@ -76,7 +87,11 @@ const TEAM_B = argOf("--team-b") || process.env.SEED_CATEGORY_B;
   const p4 = await api(T.choi, "POST", "/api/projects", { category_id: ts.id, title: "합성 제어법과 딥러닝 결합한 정책 효과 추정", summary: "SCM 의 가중치 추정을 신경망으로 대체했을 때 편향-분산", tags: "인과추론,SCM" });
   await api(T.choi, "POST", `/api/projects/${p4.id}/entries`, { date: d(21), stage: "planning", title: "연구 아이디어 정리 — SCM + NN 가중치", content: "## 메모\n- Abadie SCM 의 볼록 가중 제약을 NN 으로 완화하면 과적합 위험. 정규화 어떻게?\n- 지도교수 미팅에서 범위 좁히기로" });
 
+  } // !hasDemo
+
   // ---- 팀 C: 캡스톤 (트랙 capstone) — 팀 프로젝트 + 평가자 평가 + 팀 답변
+  const kimId = kim ? kim.user.id : (users.find((u) => u.id === "jiwon") ? "jiwon" : null);
+  if (users.some((u) => u.id === "woojin")) { console.log("캡스톤 데모(woojin)가 이미 있습니다. 종료."); return; }
   const TEAM_C = argOf("--team-c") || process.env.SEED_CATEGORY_C;
   const cap = TEAM_C
     ? (cats.find((x) => x.id === TEAM_C || x.name === TEAM_C) || (() => { throw new Error(`카테고리를 찾을 수 없습니다: ${TEAM_C}`); })())
@@ -87,7 +102,7 @@ const TEAM_B = argOf("--team-b") || process.env.SEED_CATEGORY_B;
     const s2 = await mk("한소희", "sohee", [cap.id], "sohee@example.ac.kr");
     const judge = await mk("류평가", "judge1", [{ category_id: cap.id, role: "evaluator" }], "judge1@example.ac.kr");
     const judge2 = await mk("오심사", "judge2", [{ category_id: cap.id, role: "evaluator" }], "judge2@example.ac.kr");
-    await api(ADMIN, "PUT", `/api/admin/users/${kim.user.id}/memberships/${cap.id}`, { role: "lead" });
+    if (kimId) await api(ADMIN, "PUT", `/api/admin/users/${kimId}/memberships/${cap.id}`, { role: "lead" });
     const cp = await api(s1.token, "POST", "/api/projects", { category_id: cap.id, title: "동네 러닝 크루 매칭 서비스 'RunMate'", summary: "혼자 뛰는 초보 러너를 주 2회 같이 뛸 동네 크루와 매칭. 가설: 초보 러너의 이탈 원인은 '같이 뛸 사람 부재'", tags: "위치기반,커뮤니티", deadline: d(-60) });
     await api(s1.token, "PUT", `/api/projects/${cp.id}/collaborators`, { user_ids: [s2.user.id] });
     await api(s1.token, "PUT", `/api/projects/${cp.id}/stages/topic`, { summary: "## 문제\n초보 러너의 3개월 내 중단율 62% (설문 n=48)\n\n## 목표 고객\n20~30대 직장인, 러닝 경력 6개월 미만\n\n## 검증할 가설\n- H1: 동네 크루 매칭이 주 2회 이상 러닝 지속률을 높인다\n- H2: 매칭 조건 중 '시간대' 가 '페이스' 보다 중요하다" });
@@ -109,9 +124,11 @@ const TEAM_B = argOf("--team-b") || process.env.SEED_CATEGORY_B;
   }
 
   console.log(`\n✅ 데모 데이터 생성 완료 (${BASE})`);
-  console.log("데모 로그인 토큰 (지금만 표시):");
-  console.log(`  김지원 (팀A 리드 / 팀B 구성원): ${T.kim}`);
-  console.log(`  이서준 (팀A 구성원)            : ${T.lee}`);
-  console.log(`  박하은 (팀A 구성원 / 팀B 리드): ${T.park}`);
-  console.log(`  최민재 (팀B 구성원)            : ${T.choi}`);
+  if (T.kim) {
+    console.log("데모 로그인 토큰 (지금만 표시):");
+    console.log(`  김지원 (팀A 리드 / 팀B 구성원): ${T.kim}`);
+    console.log(`  이서준 (팀A 구성원)            : ${T.lee}`);
+    console.log(`  박하은 (팀A 구성원 / 팀B 리드): ${T.park}`);
+    console.log(`  최민재 (팀B 구성원)            : ${T.choi}`);
+  }
 })().catch((e) => { console.error("실패:", e.message); process.exit(1); });
