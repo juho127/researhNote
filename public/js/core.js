@@ -316,7 +316,8 @@ export function navigate(hash) { location.hash = hash; }
 export function parseRoute() {
   const raw = location.hash.replace(/^#/, "") || "/";
   const [pathPart, queryPart] = raw.split("?");
-  const parts = pathPart.split("/").filter(Boolean);
+  // 한글 팀 ID 등이 %-인코딩된 채 들어와도 내부 비교(active 메뉴 등)가 맞도록 디코딩
+  const parts = pathPart.split("/").filter(Boolean).map((s) => { try { return decodeURIComponent(s); } catch { return s; } });
   const query = Object.fromEntries(new URLSearchParams(queryPart || ""));
   return { parts, query, path: pathPart };
 }
