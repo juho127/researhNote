@@ -1,5 +1,5 @@
 import type { AuthContext, Env, Stage } from "../env";
-import { STAGES, PROJECT_STATUSES, STAGE_STATUSES, isStage } from "../env";
+import { STAGES, STAGE_LABELS, PROJECT_STATUSES, STAGE_STATUSES, isStage } from "../env";
 import { bad, forbidden, isDateStr, oneOf, str, strLimited, bool, clampInt } from "../lib/http";
 import { newId } from "../lib/id";
 import { nowIso } from "../lib/time";
@@ -220,11 +220,8 @@ export async function createProject(env: Env, ctx: AuthContext, input: ProjectIn
     )
     .bind(id, categoryId, ownerId, title, strLimited(input.summary, 2000, "summary"), stage, str(input.target_venue, 200), deadline, normTags(input.tags), at, at)
     .run();
-  await ensureStageRows(env, id);
-  await env.DB
-    .prepare(`UPDATE project_stages SET status = 'doing', updated_at = ?, updated_by = ? WHERE project_id = ? AND stage = ?`)
-    .bind(at, ctx.user.id, id, stage)
-    .run();
+  // 시작 단계(기본 기획)까지의 상태를 흐름 규칙으로 설정: 앞은 완료, 현재는 진행 중, 뒤는 예정
+  await moveCurrentStage(env, ctx, { id, category_id: categoryId, owner_id: ownerId, title, summary: "", stage, status: "active", target_venue: "", deadline, tags: "", created_at: at, updated_at: at }, stage, at);
   await logActivity(env, { actor_id: ctx.user.id, category_id: categoryId, project_id: id, action: "project.create", target_id: id, summary: title, source: ctx.source });
   return getProjectDetail(env, ctx, id);
 }
@@ -248,11 +245,10 @@ export async function updateProject(env: Env, ctx: AuthContext, id: string, inpu
     params.push(strLimited(input.summary, 2000, "summary"));
     changes.push("요약");
   }
+  let moveTo: Stage | null = null;
   if (input.stage !== undefined) {
     if (!isStage(input.stage)) bad("stage 값이 올바르지 않습니다");
-    sets.push("stage = ?");
-    params.push(input.stage);
-    changes.push(`단계→${input.stage}`);
+    if (input.stage !== p.stage) moveTo = input.stage;
   }
   if (input.status !== undefined) {
     const s = oneOf(input.status, PROJECT_STATUSES, "status");
@@ -300,11 +296,17 @@ export async function updateProject(env: Env, ctx: AuthContext, id: string, inpu
     changes.push("카테고리");
     movedTo = cid;
   }
-  if (!sets.length) bad("변경할 필드가 없습니다");
+  if (!sets.length && !moveTo) bad("변경할 필드가 없습니다");
   const at = nowIso();
-  sets.push("updated_at = ?");
-  params.push(at, id);
-  await env.DB.prepare(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`).bind(...params).run();
+  if (sets.length) {
+    sets.push("updated_at = ?");
+    params.push(at, id);
+    await env.DB.prepare(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`).bind(...params).run();
+  }
+  if (moveTo) {
+    await moveCurrentStage(env, ctx, p, moveTo, at);
+    changes.push(`단계→${STAGE_LABELS[moveTo]}`);
+  }
   if (movedTo) {
     // 활동 이력도 새 카테고리로, 새 카테고리 비구성원 담당자는 해제
     await env.DB.batch([
@@ -312,17 +314,62 @@ export async function updateProject(env: Env, ctx: AuthContext, id: string, inpu
       env.DB.prepare(`UPDATE tasks SET assignee_id = NULL WHERE project_id = ? AND assignee_id IS NOT NULL AND assignee_id NOT IN (SELECT user_id FROM memberships WHERE category_id = ?)`).bind(id, movedTo),
     ]);
   }
-  if (input.stage !== undefined && isStage(input.stage)) {
-    // 현재 단계로 지정된 단계가 todo 면 doing 으로
-    await env.DB
-      .prepare(`UPDATE project_stages SET status = 'doing', updated_at = ?, updated_by = ? WHERE project_id = ? AND stage = ? AND status = 'todo'`)
-      .bind(at, ctx.user.id, id, input.stage)
-      .run();
-  }
   await logActivity(env, { actor_id: ctx.user.id, category_id: p.category_id, project_id: id, action: "project.update", target_id: id, summary: changes.join(", "), source: ctx.source });
   return getProjectDetail(env, ctx, id);
 }
 
+/**
+ * 논문 흐름은 한 줄이다: 현재 단계 앞은 완료, 현재 단계는 진행 중, 뒤는 예정.
+ * 현재 단계를 옮기면 모든 단계 상태를 이 규칙으로 다시 계산한다 (정리 내용은 유지).
+ */
+async function moveCurrentStage(env: Env, ctx: AuthContext, p: ProjectRow, target: Stage, at: string): Promise<void> {
+  const ti = STAGES.indexOf(target);
+  await ensureStageRows(env, p.id);
+  await env.DB.batch([
+    ...STAGES.map((s, i) =>
+      env.DB.prepare(`UPDATE project_stages SET status = ?, updated_at = ?, updated_by = ? WHERE project_id = ? AND stage = ?`).bind(i < ti ? "done" : i === ti ? "doing" : "todo", at, ctx.user.id, p.id, s)
+    ),
+    env.DB.prepare(`UPDATE projects SET stage = ?, status = CASE WHEN status = 'done' THEN 'active' ELSE status END, updated_at = ? WHERE id = ?`).bind(target, at, p.id),
+  ]);
+}
+
+/**
+ * 다음 단계로 진행 (to 를 주면 그 단계로 이동: 뒤로 건너뛰거나 앞으로 되돌리기).
+ * 마지막 단계(검토·투고)에서 to 없이 호출하면 논문 완료(모든 단계 done, 프로젝트 status=done).
+ */
+export async function advanceStage(env: Env, ctx: AuthContext, id: string, to?: unknown): Promise<ProjectDetail> {
+  const p = await getProjectForWrite(env, ctx, id);
+  if (p.status === "archived" && !ctx.isAdmin) forbidden("보관된 프로젝트는 진행할 수 없습니다. 먼저 상태를 되돌리세요");
+  const at = nowIso();
+  const cur = STAGES.indexOf(p.stage);
+  let summary: string;
+  if (to !== undefined && to !== null && to !== "") {
+    if (!isStage(to)) bad("to 값이 올바르지 않습니다");
+    if (to === p.stage && p.status !== "done") bad("이미 현재 단계입니다");
+    await moveCurrentStage(env, ctx, p, to, at);
+    const ti = STAGES.indexOf(to);
+    summary = `${STAGE_LABELS[p.stage]} → ${STAGE_LABELS[to]}${ti < cur ? " (되돌리기)" : ""}`;
+  } else if (cur >= STAGES.length - 1) {
+    if (p.status === "done") bad("이미 완료된 논문입니다");
+    await ensureStageRows(env, id);
+    await env.DB.batch([
+      env.DB.prepare(`UPDATE project_stages SET status = 'done', updated_at = ?, updated_by = ? WHERE project_id = ?`).bind(at, ctx.user.id, id),
+      env.DB.prepare(`UPDATE projects SET status = 'done', updated_at = ? WHERE id = ?`).bind(at, id),
+    ]);
+    summary = `${STAGE_LABELS[p.stage]} 완료 → 논문 완료`;
+  } else {
+    const next = STAGES[cur + 1];
+    await moveCurrentStage(env, ctx, p, next, at);
+    summary = `${STAGE_LABELS[p.stage]} 완료 → ${STAGE_LABELS[next]}`;
+  }
+  await logActivity(env, { actor_id: ctx.user.id, category_id: p.category_id, project_id: id, action: "stage.advance", target_id: p.stage, summary, source: ctx.source });
+  return getProjectDetail(env, ctx, id);
+}
+
+/**
+ * 단계별 정리(누적 결론) 갱신. 상태는 흐름에서 도출되므로 직접 편집하지 않는다.
+ * 호환용 별칭: set_current=true → 그 단계로 이동, status=done(현재 단계) → 다음 단계로, status=doing → 그 단계로 이동.
+ */
 export async function updateStage(
   env: Env,
   ctx: AuthContext,
@@ -334,43 +381,33 @@ export async function updateStage(
   if (p.status === "archived" && !ctx.isAdmin) forbidden("보관된 프로젝트는 수정할 수 없습니다. 먼저 상태를 되돌리세요");
   if (!isStage(stage)) bad("stage 값이 올바르지 않습니다");
   await ensureStageRows(env, id);
-  const sets: string[] = [];
-  const params: unknown[] = [];
-  const changes: string[] = [];
-  if (input.status !== undefined && input.status !== null) {
-    const s = oneOf(input.status, STAGE_STATUSES, "status");
-    sets.push("status = ?");
-    params.push(s);
-    changes.push(`상태→${s}`);
-  }
-  if (input.summary !== undefined && input.summary !== null) {
-    sets.push("summary = ?");
-    params.push(strLimited(input.summary, 100_000, "summary"));
-    changes.push("정리 갱신");
-  }
-  const setCurrent = bool(input.set_current) && p.stage !== stage;
-  if (!sets.length && !setCurrent) bad("변경할 필드가 없습니다");
   const at = nowIso();
-  if (setCurrent && (input.status === undefined || input.status === null)) {
-    // 현재 단계로 지정하면서 상태를 안 줬으면 '예정' → '진행 중'
-    sets.push("status = CASE WHEN status = 'todo' THEN 'doing' ELSE status END");
-    changes.push("진행 중");
-  }
-  if (sets.length) {
-    sets.push("updated_at = ?", "updated_by = ?");
-    params.push(at, ctx.user.id, id, stage);
-    await env.DB.prepare(`UPDATE project_stages SET ${sets.join(", ")} WHERE project_id = ? AND stage = ?`).bind(...params).run();
-  }
-  if (setCurrent) {
-    await env.DB.prepare(`UPDATE projects SET stage = ?, updated_at = ? WHERE id = ?`).bind(stage, at, id).run();
-    changes.push("현재 단계로 지정");
-  } else {
+  let changed = false;
+  if (input.summary !== undefined && input.summary !== null) {
+    await env.DB
+      .prepare(`UPDATE project_stages SET summary = ?, updated_at = ?, updated_by = ? WHERE project_id = ? AND stage = ?`)
+      .bind(strLimited(input.summary, 100_000, "summary"), at, ctx.user.id, id, stage)
+      .run();
     await touchProject(env, id);
+    await logActivity(env, { actor_id: ctx.user.id, category_id: p.category_id, project_id: id, action: "stage.update", target_id: stage, summary: `${STAGE_LABELS[stage]}: 정리 갱신`, source: ctx.source });
+    changed = true;
   }
-  await logActivity(env, {
-    actor_id: ctx.user.id, category_id: p.category_id, project_id: id, action: "stage.update", target_id: stage,
-    summary: `${stage}: ${changes.join(", ")}`, source: ctx.source,
-  });
+  const status = input.status === undefined || input.status === null ? null : oneOf(input.status, STAGE_STATUSES, "status");
+  const wantCurrent = bool(input.set_current) || status === "doing";
+  if (wantCurrent && stage !== p.stage) {
+    await advanceStage(env, ctx, id, stage);
+    changed = true;
+  } else if (status === "done" && stage === p.stage) {
+    await advanceStage(env, ctx, id);
+    changed = true;
+  } else if (status === "done" && STAGES.indexOf(stage) > STAGES.indexOf(p.stage)) {
+    // 뒤 단계를 완료로 → 그 다음 단계로 건너뛰기
+    const ni = STAGES.indexOf(stage) + 1;
+    if (ni < STAGES.length) await advanceStage(env, ctx, id, STAGES[ni]);
+    else { await advanceStage(env, ctx, id, stage); await advanceStage(env, ctx, id); }
+    changed = true;
+  }
+  if (!changed) bad("변경할 필드가 없습니다");
   return getProjectDetail(env, ctx, id);
 }
 

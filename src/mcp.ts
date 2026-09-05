@@ -129,7 +129,7 @@ const TOOLS: ToolDef[] = [
         category_id: idProp("카테고리 ID (whoami 참고)"),
         title: { type: "string", description: "논문/연구 제목" },
         summary: { type: "string", description: "연구 질문·한 줄 요약" },
-        stage: stageEnum,
+        stage: { ...stageEnum, description: "시작 단계. 기본 planning. 이미 진행 중인 논문을 뒤늦게 등록할 때만 지정 (앞 단계는 완료로 표시됨)" },
         target_venue: { type: "string", description: "목표 학회/저널" },
         deadline: dateProp("마감일"),
         tags: { type: "array", items: { type: "string" } },
@@ -253,24 +253,35 @@ const TOOLS: ToolDef[] = [
     name: "update_stage",
     title: "단계별 정리 갱신 (논문 뼈대)",
     description:
-      "프로젝트의 특정 단계(기획/리서치/관련기법/실험결과/논문작성/검토)의 상태(todo/doing/done)와 정리 요약(마크다운)을 갱신한다. " +
-      "정리 요약은 그 단계까지의 누적 결론 = 논문 해당 절의 뼈대. 일별 기록은 log_progress, 누적 정리는 이 도구. 프로젝트의 현재 단계는 set_current=true 를 줄 때만 바뀐다.",
+      "프로젝트의 특정 단계(기획/리서치/관련기법/실험결과/논문작성/검토)의 정리 요약(마크다운)을 갱신한다. " +
+      "정리 요약은 그 단계까지의 누적 결론 = 논문 해당 절의 뼈대. 일별 기록은 log_progress, 누적 정리는 이 도구. " +
+      "단계 상태(예정/진행 중/완료)는 현재 단계 위치에서 자동으로 정해지므로 직접 바꾸지 않는다. 단계를 옮기려면 advance_stage.",
     inputSchema: {
       type: "object",
       properties: {
         project_id: idProp("프로젝트 ID"),
         stage: stageEnum,
-        status: { type: "string", enum: ["todo", "doing", "done"] },
         summary: { type: "string", description: "누적 정리(마크다운). 기존 내용을 덮어쓰므로 get_project 로 먼저 읽고 병합할 것" },
-        set_current: { type: "boolean" },
       },
-      required: ["project_id", "stage"],
+      required: ["project_id", "stage", "summary"],
       additionalProperties: false,
     },
     handler: async (env, ctx, a) => {
-      const p = await P.updateStage(env, ctx, String(a.project_id), String(a.stage), { status: a.status, summary: a.summary, set_current: a.set_current });
+      const p = await P.updateStage(env, ctx, String(a.project_id), String(a.stage), { summary: a.summary });
       const st = p.stages.find((x) => x.stage === a.stage)!;
       return { text: `갱신됨: ${p.title} · ${STAGE_LABELS[st.stage]} [${st.status}]${p.stage === st.stage ? " · 현재 단계" : ""}`, data: p };
+    },
+  },
+  {
+    name: "advance_stage",
+    title: "다음 단계로 진행 (논문 흐름 한 칸)",
+    description:
+      "논문 흐름은 기획 → 리서치 → 관련기법 → 실험결과 → 논문작성 → 검토·투고 한 줄이다. to 를 생략하면 현재 단계를 완료하고 다음 단계로 넘어간다 " +
+      "(마지막 단계에서는 논문 완료 처리). to 를 주면 그 단계로 이동한다 (앞 단계로 되돌리기 포함). 사용자가 '이 단계 끝났다/다음으로 넘어가자' 라고 할 때만 호출.",
+    inputSchema: { type: "object", properties: { project_id: idProp("프로젝트 ID"), to: { ...stageEnum, description: "이동할 단계 (생략 시 다음 단계)" } }, required: ["project_id"], additionalProperties: false },
+    handler: async (env, ctx, a) => {
+      const p = await P.advanceStage(env, ctx, String(a.project_id), a.to);
+      return { text: p.status === "done" ? `논문 완료 처리됨: ${p.title}` : `현재 단계: ${STAGE_LABELS[p.stage]} (${p.title}) · 완료 단계 ${p.stage_done}/${STAGES.length}`, data: p };
     },
   },
   {

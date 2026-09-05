@@ -95,7 +95,7 @@ MCP 서버가 \`initialize\` 응답으로 사용 원칙을 주므로 필수는 �
 
 - 세션 시작: \`whoami\` → 기록할 프로젝트 확정 (없으면 사용자에게 묻고, 새 연구일 때만 \`create_project\`)
 - 작업 후: \`log_progress\` (제목은 결과가 드러나게, 본문은 \`## 한 일 / ## 결과 / ## 다음 할 일 / ## 메모\`)
-- 누적 결론 변화: \`update_stage\` (읽고 병합 후 덮어쓰기) · 다음 할 일: \`add_task\`
+- 누적 결론 변화: \`update_stage\` (읽고 병합 후 덮어쓰기) · 단계 진행: \`advance_stage\` · 다음 할 일: \`add_task\`
 - 팀: \`team_feed\`, \`team_overview\`, \`add_comment\`, \`set_review\` · 팀 찾기/가입: \`list_teams\`, \`join_team\` · 보고서: \`get_report\`
 - 전체 지침: \`${base}/SKILL.md\`
 `;

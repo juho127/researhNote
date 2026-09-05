@@ -1,4 +1,4 @@
-import { state, get, post, patch, put, del, h, mount, clear, pill, avatar, stages, stageLabel, stageHint, stageSelect, fmtRel, fmtDT, weekday, today, daysAgo, input, textarea, field, select, modal, confirmDialog, toast, errToast, mdEl, openReport, downloadFile, projectProgress, STATUS_LABEL, STAGE_STATUS_LABEL, REVIEW_LABEL, REVIEW_CLASS } from "../core.js";
+import { state, get, post, patch, put, del, h, mount, clear, pill, avatar, stages, stageLabel, stageHint, stageIndex, stageSelect, fmtRel, fmtDT, weekday, today, daysAgo, input, textarea, field, select, modal, confirmDialog, toast, errToast, mdEl, openReport, downloadFile, projectProgress, STATUS_LABEL, STAGE_STATUS_LABEL, REVIEW_LABEL, REVIEW_CLASS } from "../core.js";
 
 let current = null; // { project, tab, filters }
 
@@ -38,10 +38,13 @@ function draw(container) {
         p.can_edit ? h("button.btn.primary", { onclick: () => entryEditor(p, null, container) }, "+ 기록 추가") : null,
       ),
     ),
-    h("div.stepper", { style: { marginTop: "16px" } }, p.stages.map((s) => h("div.step." + s.status + (p.stage === s.stage ? ".current" : ""), {
-      title: stageHint(s.stage) + (p.can_edit ? " · 클릭: 단계별 정리" : ""),
-      onclick: () => { current.tab = "stages"; current.focusStage = s.stage; draw(container); },
-    }, h("div.s-l", stageLabel(s.stage)), h("div.s-s", STAGE_STATUS_LABEL[s.status], s.entry_count ? ` · 기록 ${s.entry_count}` : null)))),
+    h("div.row", { style: { marginTop: "16px", alignItems: "stretch" } },
+      h("div.stepper", { style: { flex: 1 } }, p.stages.map((s) => h("div.step." + s.status + (p.stage === s.stage ? ".current" : ""), {
+        title: stageHint(s.stage) + " · 클릭: 단계별 정리",
+        onclick: () => { current.tab = "stages"; current.focusStage = s.stage; draw(container); },
+      }, h("div.s-l", stageLabel(s.stage)), h("div.s-s", STAGE_STATUS_LABEL[s.status], s.entry_count ? ` · 기록 ${s.entry_count}` : null)))),
+      p.can_edit && p.status !== "archived" ? advanceButton(p, container) : null,
+    ),
   );
 
   const tabs = h("div.tabs");
@@ -54,6 +57,29 @@ function draw(container) {
   else if (current.tab === "stages") renderStages(body, container);
   else if (current.tab === "tasks") renderTasks(body, container);
   else renderMembers(body);
+}
+
+/** 헤더의 "다음 단계로 →" (마지막 단계면 "논문 완료") */
+function advanceButton(p, container) {
+  const idx = stageIndex(p.stage);
+  const last = idx >= stages().length - 1;
+  if (p.status === "done") return h("div.row", { style: { alignItems: "center" } }, pill("논문 완료", "ok"), h("button.btn.sm", { onclick: () => advance(p, container, "review") }, "검토 단계로 되돌리기"));
+  const next = last ? null : stages()[idx + 1];
+  return h("button.btn.mint", { style: { alignSelf: "center", whiteSpace: "nowrap" }, title: last ? "검토·투고를 마치고 논문을 완료 처리합니다" : `${stageLabel(p.stage)} 완료 → ${next.label}`, onclick: () => advance(p, container) }, last ? "논문 완료 ✓" : `다음 단계로: ${next.label} →`);
+}
+
+async function advance(p, container, to) {
+  const idx = stageIndex(p.stage);
+  const last = idx >= stages().length - 1;
+  const msg = to
+    ? `현재 단계를 ${stageLabel(to)}(으)로 옮길까요? ${stageIndex(to) < idx ? "그 뒤 단계들은 다시 '예정'이 됩니다 (정리 내용은 유지)." : "그 앞 단계들은 완료로 표시됩니다."}`
+    : last ? "검토·투고를 마치고 논문을 완료 처리할까요? (모든 단계 완료, 상태 '완료')" : `${stageLabel(p.stage)} 단계를 완료하고 ${stages()[idx + 1].label} 단계로 넘어갈까요?`;
+  if (!(await confirmDialog(msg, { okLabel: to ? "이동" : last ? "완료" : "다음 단계로" }))) return;
+  try {
+    await post(`/api/projects/${p.id}/advance`, to ? { to } : {});
+    toast(to ? `${stageLabel(to)} 단계로 이동했습니다` : last ? "논문을 완료 처리했습니다" : `${stages()[idx + 1].label} 단계로 넘어갔습니다`);
+    reload(container);
+  } catch (e) { errToast(e); }
 }
 
 // ---------- 타임라인 ----------
@@ -186,21 +212,31 @@ export function entryEditor(p, e, container) {
 function renderStages(body, container) {
   const p = current.project;
   const grid = h("div.stack");
+  const curIdx = stageIndex(p.stage);
+  const lastIdx = stages().length - 1;
   for (const s of p.stages) {
-    const isCurrent = p.stage === s.stage;
-    const status = select([{ value: "todo", label: "예정" }, { value: "doing", label: "진행 중" }, { value: "done", label: "완료" }], { value: s.status, disabled: !p.can_edit, style: { width: "110px" } });
+    const isCurrent = p.stage === s.stage && p.status !== "done";
+    const idx = stageIndex(s.stage);
     const ta = textarea({ value: s.summary || "", rows: Math.max(4, Math.min(18, (s.summary || "").split("\n").length + 2)), placeholder: `${stageLabel(s.stage)} 단계의 누적 정리 — ${stageHint(s.stage)}. 논문 해당 절의 뼈대가 되도록 마크다운으로.`, disabled: !p.can_edit });
     const view = mdEl(s.summary || "");
     const editing = h("div.stack", { style: { display: "none" } }, ta);
     const save = h("button.btn.sm.primary", { onclick: async () => {
       save.disabled = true;
-      try { await put(`/api/projects/${p.id}/stages/${s.stage}`, { status: status.value, summary: ta.value }); toast("저장했습니다"); await reload(container); } catch (ex) { errToast(ex); save.disabled = false; }
+      try { await put(`/api/projects/${p.id}/stages/${s.stage}`, { summary: ta.value }); toast("저장했습니다"); await reload(container); } catch (ex) { errToast(ex); save.disabled = false; }
     } }, "저장");
     const editBtn = h("button.btn.sm", { onclick: () => { const on = editing.style.display === "none"; editing.style.display = on ? "" : "none"; view.style.display = on ? "none" : ""; editBtn.textContent = on ? "편집 닫기" : "편집"; if (on) ta.focus(); } }, "편집");
-    const setCur = !isCurrent && p.can_edit ? h("button.btn.sm", { onclick: async () => { await put(`/api/projects/${p.id}/stages/${s.stage}`, { set_current: true, status: s.status === "todo" ? "doing" : s.status }); toast(`현재 단계를 ${stageLabel(s.stage)}(으)로 변경`); reload(container); } }, "현재 단계로") : null;
-    const card = h("div.card.stage-card", { id: `stage-${s.stage}` },
-      h("div.sc-h", h("h3", stageLabel(s.stage)), isCurrent ? pill("현재", "navy sm") : null, s.entry_count ? h("a.tiny.muted", { href: "#", onclick: (ev) => { ev.preventDefault(); current.tab = "timeline"; current.stageFilter = s.stage; draw(container); } }, `기록 ${s.entry_count}건 보기`) : null, h("span.spacer"),
-        p.can_edit ? [status, setCur, editBtn, save] : pill(STAGE_STATUS_LABEL[s.status], s.status === "done" ? "ok" : s.status === "doing" ? "warn" : "mute")),
+    // 흐름 버튼: 현재 → 다음 단계로 / 앞 단계 → 되돌리기 / 뒤 단계 → 여기까지 진행
+    let flowBtn = null;
+    if (p.can_edit && p.status !== "archived") {
+      if (p.status === "done") flowBtn = h("button.btn.sm", { onclick: () => advance(p, container, s.stage) }, "이 단계로 되돌리기");
+      else if (isCurrent) flowBtn = h("button.btn.sm.mint", { onclick: () => advance(p, container) }, idx >= lastIdx ? "논문 완료 ✓" : "다음 단계로 →");
+      else if (idx < curIdx) flowBtn = h("button.btn.sm", { onclick: () => advance(p, container, s.stage) }, "이 단계로 되돌리기");
+      else flowBtn = h("button.btn.sm", { onclick: () => advance(p, container, s.stage) }, "여기까지 진행");
+    }
+    const statusPill = pill(STAGE_STATUS_LABEL[s.status], s.status === "done" ? "ok" : s.status === "doing" ? "warn" : "mute");
+    const card = h("div.card.stage-card", { id: `stage-${s.stage}`, style: isCurrent ? { borderColor: "var(--navy)" } : idx > curIdx && p.status !== "done" ? { opacity: ".85" } : {} },
+      h("div.sc-h", h("h3", `${idx + 1}. ${stageLabel(s.stage)}`), statusPill, isCurrent ? pill("현재", "navy sm") : null, s.entry_count ? h("a.tiny.muted", { href: "#", onclick: (ev) => { ev.preventDefault(); current.tab = "timeline"; current.stageFilter = s.stage; draw(container); } }, `기록 ${s.entry_count}건 보기`) : null, h("span.spacer"),
+        p.can_edit ? [flowBtn, editBtn, save] : null),
       h("div.hint", stageHint(s.stage), s.updated_by ? ` · 갱신 ${fmtRel(s.updated_at)}` : ""),
       s.summary ? view : h("div.small.muted", { style: { fontStyle: "italic" } }, "아직 정리되지 않았습니다."),
       editing,
@@ -209,7 +245,7 @@ function renderStages(body, container) {
     if (current.focusStage === s.stage) { setTimeout(() => card.scrollIntoView({ block: "center", behavior: "smooth" }), 50); current.focusStage = null; }
     grid.append(card);
   }
-  mount(body, h("p.small.muted", { style: { margin: "0 0 12px" } }, "각 단계의 누적 결론을 정리합니다. 날짜별 기록은 타임라인에, 그 기록들이 모여 만든 결론은 여기에 — 보고서와 논문 초고의 뼈대가 됩니다. AI 도구(MCP)의 update_stage 로도 갱신됩니다."), grid);
+  mount(body, h("p.small.muted", { style: { margin: "0 0 12px" } }, "논문은 한 흐름으로 진행됩니다: 현재 단계 앞은 완료, 뒤는 예정. 각 단계의 누적 결론을 여기에 정리하세요 (보고서와 초고의 뼈대). 단계가 끝나면 [다음 단계로 →]. AI 도구(MCP)의 update_stage / advance_stage 로도 갱신됩니다."), grid);
 }
 
 // ---------- 할 일 ----------

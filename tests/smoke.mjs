@@ -108,11 +108,26 @@ const ts = Date.now().toString(36);
   const e1Full = await api(MEM, "GET", `/api/entries/${e1Id}`);
   ok("entry approved + 3 comments", e1Full.data.review_status === "approved" && e1Full.data.comments.length === 3);
 
-  // 단계 정리
-  const st = await api(MEM, "PUT", `/api/projects/${prjId}/stages/experiment`, { status: "doing", summary: "## 실험\n- baseline 0.91", set_current: true });
-  ok("PUT stage summary + set_current", st.status === 200 && st.data.stage === "experiment");
-  const stDone = await api(MEM, "PUT", `/api/projects/${prjId}/stages/planning`, { status: "done" });
-  ok("planning done → stage_done=1", stDone.status === 200 && stDone.data.stage_done === 1);
+  // 단계 정리 · 한 흐름 진행
+  const st = await api(MEM, "PUT", `/api/projects/${prjId}/stages/experiment`, { summary: "## 실험\n- baseline 0.91", set_current: true });
+  ok("PUT stage summary + set_current → flow recalculated", st.status === 200 && st.data.stage === "experiment" && st.data.stage_done === 3 && st.data.stages.find((s) => s.stage === "planning").status === "done" && st.data.stages.find((s) => s.stage === "writing").status === "todo");
+  const adv = await api(MEM, "POST", `/api/projects/${prjId}/advance`, {});
+  ok("advance → writing, stage_done=4", adv.status === 200 && adv.data.stage === "writing" && adv.data.stage_done === 4);
+  const back = await api(MEM, "POST", `/api/projects/${prjId}/advance`, { to: "method" });
+  ok("advance to earlier stage → method, later stages todo, summaries kept", back.status === 200 && back.data.stage === "method" && back.data.stage_done === 2 && back.data.stages.find((s) => s.stage === "experiment").status === "todo" && back.data.stages.find((s) => s.stage === "experiment").summary.includes("baseline"));
+  const summaryOnly = await api(MEM, "PUT", `/api/projects/${prjId}/stages/writing`, { summary: "초고 계획" });
+  ok("summary edit on later stage does not move current", summaryOnly.status === 200 && summaryOnly.data.stage === "method");
+  const jumpBack = await api(MEM, "POST", `/api/projects/${prjId}/advance`, { to: "experiment" });
+  ok("advance to experiment again", jumpBack.data.stage === "experiment" && jumpBack.data.stage_done === 3);
+  const advAll = [];
+  for (let i = 0; i < 2; i++) advAll.push(await api(MEM, "POST", `/api/projects/${prjId}/advance`, {}));
+  ok("advance twice → review (last)", advAll[1].data.stage === "review" && advAll[1].data.status === "active");
+  const finish = await api(MEM, "POST", `/api/projects/${prjId}/advance`, {});
+  ok("advance on last stage → paper done", finish.status === 200 && finish.data.status === "done" && finish.data.stage_done === 6);
+  const again = await api(MEM, "POST", `/api/projects/${prjId}/advance`, {});
+  ok("advance on done paper → 400", again.status === 400);
+  const reopen = await api(MEM, "POST", `/api/projects/${prjId}/advance`, { to: "experiment" });
+  ok("reopen done paper to experiment → active", reopen.status === 200 && reopen.data.status === "active" && reopen.data.stage === "experiment");
 
   // 할 일
   const t1 = await api(LEAD, "POST", `/api/projects/${prjId}/tasks`, { title: "시드 5개 반복", due: "2026-09-10", assignee_id: memId });
@@ -207,8 +222,9 @@ const ts = Date.now().toString(36);
   ok("mcp missing required arg → isError", badArgs.data.result?.isError === true && badArgs.data.result.content[0].text.includes("content"));
   const badType = await mcp(MEM2, "tools/call", { name: "update_stage", arguments: { project_id: prjId, stage: "experiment", set_current: "true" } });
   ok("mcp wrong arg type → isError", badType.data.result?.isError === true);
-  const stageOnly = await api(MEM2, "PUT", `/api/projects/${prjId}/stages/writing`, { status: "doing" });
-  ok("stage doing without set_current keeps current stage", stageOnly.status === 200 && stageOnly.data.stage === "experiment");
+  const stageAlias = await api(MEM2, "PUT", `/api/projects/${prjId}/stages/writing`, { status: "doing" });
+  ok("status=doing alias moves current stage (compat)", stageAlias.status === 200 && stageAlias.data.stage === "writing");
+  await api(MEM2, "POST", `/api/projects/${prjId}/advance`, { to: "experiment" });
   const missingPrompt = await mcp(MEM2, "prompts/get", { name: "weekly_review", arguments: {} });
   ok("prompt missing required arg → -32602", missingPrompt.data.error?.code === -32602);
   const badEnc = await fetch(BASE + "/api/projects/%E0%A4%A", { headers: { Authorization: `Bearer ${MEM2}` } });

@@ -124,13 +124,18 @@ textarea.input.mono{font-family:var(--mono);font-size:13px}
 .stale{color:var(--brick)}
 
 /* ---------- 칸반 ---------- */
-.board{display:grid;grid-template-columns:repeat(6,minmax(200px,1fr));gap:12px;overflow-x:auto;padding-bottom:8px}
-.col{background:var(--wash);border-radius:var(--radius);padding:10px;min-height:200px;display:flex;flex-direction:column;gap:8px}
-.col .col-h{display:flex;align-items:center;gap:8px;font-weight:700;color:var(--navy);font-size:13.5px;padding:2px 4px 6px}
+/* 6개 단계가 한 화면에 들어오도록 열 폭을 화면에 맞춘다 (가로 스크롤 없음). 좁은 화면은 3열 → 2열로 접힘 */
+.board{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;padding-bottom:8px}
+.col{background:var(--wash);border-radius:var(--radius);padding:8px;min-height:180px;min-width:0;display:flex;flex-direction:column;gap:8px}
+.col .col-h{display:flex;align-items:center;gap:6px;font-weight:700;color:var(--navy);font-size:13px;padding:2px 4px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .col .col-h .n{font-family:var(--mono);font-size:11px;color:var(--muted);font-weight:700}
-.col .pcard{padding:11px 12px;min-height:0;border-radius:11px}
-.col .pcard .title{font-size:14.5px}
-@media (max-width:1100px){.board{grid-template-columns:repeat(6,240px)}}
+.col .pcard{padding:10px 11px;min-height:0;border-radius:11px;min-width:0}
+.col .pcard .title{font-size:13.5px;line-height:1.3;overflow-wrap:anywhere}
+.col .pcard .foot{font-size:11px;gap:4px}
+.col .pcard .progress{margin:0}
+@media (max-width:1100px){.board{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:640px){.board{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.wrap{overflow-x:clip}
 
 /* ---------- 타임라인 / 기록 ---------- */
 .stepper{display:flex;gap:6px;flex-wrap:wrap}

@@ -14,8 +14,8 @@ description: 연구노트(Research Note) 플랫폼에 논문 진행 상황을 �
 |---|---|
 | 카테고리 | 연구 그룹/팀. 같은 카테고리 구성원은 서로의 프로젝트를 보고 코멘트·검토한다 |
 | 프로젝트 | 논문 하나. 현재 단계(stage)·상태(active/paused/done)·목표 학회·마감 |
-| 단계 (stage) | `planning` 기획 → `literature` 리서치 → `method` 관련기법 → `experiment` 실험결과 → `writing` 논문작성 → `review` 검토·투고 |
-| 단계별 정리 | 각 단계의 **누적 결론** (마크다운). 논문 해당 절의 뼈대. `update_stage` 로 갱신 |
+| 단계 (stage) | `planning` 기획 → `literature` 리서치 → `method` 관련기법 → `experiment` 실험결과 → `writing` 논문작성 → `review` 검토·투고. **한 줄 흐름**: 현재 단계 앞은 완료, 뒤는 예정 (자동) |
+| 단계별 정리 | 각 단계의 **누적 결론** (마크다운). 논문 해당 절의 뼈대. `update_stage` 로 갱신. 다음 단계로 넘어갈 때는 `advance_stage` |
 | 기록 (entry) | **날짜별** 진행 로그. `log_progress` 로 추가. 팀원이 코멘트·검토 |
 | 할 일 (task) | 다음 할 일. `add_task` / `update_task` |
 | 검토 | 기록에 `requested` → 리드가 `approved` / `changes_requested` |
@@ -57,7 +57,7 @@ description: 연구노트(Research Note) 플랫폼에 논문 진행 상황을 �
    - `title` 은 결과가 드러나게 한 줄로: "ResNet-50 baseline, CIFAR-10 acc 91.2%" (좋음) / "실험" (나쁨)
    - `stage` 는 작업 성격으로 고른다. 실험 코드 작성은 `method`, 실행·결과 분석은 `experiment`.
    - `date` 는 실제 연구일. 어제 한 일을 오늘 기록하면 어제 날짜.
-4. 누적 결론이 바뀌었으면 `update_stage` 로 해당 단계 정리를 갱신한다. **덮어쓰기**이므로 기존 정리를 읽고 병합한 전체 텍스트를 보낸다. 단계가 실질적으로 끝났으면 `status: done`, 다음 단계로 넘어가면 `set_current: true`.
+4. 누적 결론이 바뀌었으면 `update_stage` 로 해당 단계 정리를 갱신한다. **덮어쓰기**이므로 기존 정리를 읽고 병합한 전체 텍스트를 보낸다. 단계가 실질적으로 끝나 다음으로 넘어가야 하면 사용자에게 확인한 뒤 `advance_stage` (생략 시 다음 단계, `to` 로 특정 단계·되돌리기). 마지막 단계에서 `advance_stage` 는 논문 완료 처리다.
 5. "다음 할 일" 항목은 `add_task` 로 등록한다. 이미 있는 할 일이 끝났으면 `update_task status=done`.
 6. 사용자가 검토를 원하면 `log_progress` 에 `request_review: true` 또는 `set_review`.
 

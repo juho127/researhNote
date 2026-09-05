@@ -88,7 +88,8 @@ http_headers = { Authorization = "Bearer rn_xxx" }
 | `list_entries` | `project_id?, category_id?, since?, until?, stage?, q?, review_status?, limit?, full?` | 기록 조회 |
 | `get_entry` | `entry_id` | 본문 + 코멘트 |
 | `update_entry` | `entry_id, title?, content?, stage?, date?` | 내 기록 수정 |
-| **`update_stage`** | `project_id, stage, status?, summary?, set_current?` | **단계 누적 정리 갱신** (덮어쓰기 → 먼저 읽고 병합) |
+| **`update_stage`** | `project_id, stage, summary` | **단계 누적 정리 갱신** (덮어쓰기 → 먼저 읽고 병합). 상태는 흐름에서 자동 |
+| `advance_stage` | `project_id, to?` | 현재 단계 완료 → 다음 단계 (마지막이면 논문 완료). `to` 로 특정 단계 이동·되돌리기 |
 | `list_tasks` / `add_task` / `update_task` | `project_id` / `task_id` … | 할 일 |
 | `add_comment` | `entry_id, content, kind?` | 코멘트 (리드: approve / request_changes) |
 | `set_review` | `entry_id, status, note?` | 검토 상태 |

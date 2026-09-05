@@ -136,7 +136,7 @@ export const REVIEW_CLASS = { requested: "bad", changes_requested: "warn", appro
 export const ACTION_LABEL = {
   "project.create": "프로젝트 생성", "project.update": "프로젝트 수정", "project.archive": "프로젝트 보관",
   "entry.create": "기록 추가", "entry.update": "기록 수정", "entry.delete": "기록 삭제",
-  "stage.update": "단계 정리 갱신", "comment.create": "코멘트", "review.request": "검토 요청", "review.approve": "승인", "review.changes": "수정 요청", "review.clear": "검토 취소",
+  "stage.update": "단계 정리 갱신", "stage.advance": "단계 진행", "comment.create": "코멘트", "review.request": "검토 요청", "review.approve": "승인", "review.changes": "수정 요청", "review.clear": "검토 취소",
   "task.create": "할 일 추가", "task.update": "할 일 갱신", "task.delete": "할 일 삭제",
   "category.create": "카테고리 생성", "category.update": "카테고리 수정", "user.create": "연구원 등록", "user.update": "연구원 수정",
   "membership.set": "소속 변경", "membership.remove": "소속 해제", "token.issue": "토큰 발급", "token.revoke": "토큰 회수",

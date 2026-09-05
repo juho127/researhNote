@@ -132,13 +132,13 @@ export function newProjectDialog(me, categoryId, categoryName) {
   const venue = input({ placeholder: "예: NeurIPS 2027, KDD, 한국정보과학회" });
   const deadline = input({ type: "date" });
   const tags = input({ placeholder: "쉼표로 구분: LLM, 시계열, 인과추론" });
-  const stage = stageSelect("planning");
   modal({
     title: "새 논문 프로젝트",
-    body: h("div.stack", h("div.form-grid", field("카테고리", cat), field("시작 단계", stage)), field("제목", title), field("연구 요약", summary), h("div.form-grid", field("목표 학회/저널", venue), field("마감", deadline)), field("태그", tags)),
+    body: h("div.stack", field("카테고리", cat), field("제목", title), field("연구 요약", summary), h("div.form-grid", field("목표 학회/저널", venue), field("마감", deadline)), field("태그", tags),
+      h("p.help", "논문은 기획 → 리서치 → 관련기법 → 실험결과 → 논문작성 → 검토·투고 순서로 진행됩니다. 기획 단계에서 시작하며, 프로젝트 화면의 [다음 단계로] 버튼으로 넘어갑니다.")),
     actions: [{ label: "취소" }, { label: "만들기", cls: "primary", onClick: async () => {
       if (!title.value.trim()) { toast("제목을 입력하세요", true); return false; }
-      const p = await post("/api/projects", { category_id: cat.value, title: title.value.trim(), summary: summary.value, target_venue: venue.value, deadline: deadline.value || null, tags: tags.value, stage: stage.value });
+      const p = await post("/api/projects", { category_id: cat.value, title: title.value.trim(), summary: summary.value, target_venue: venue.value, deadline: deadline.value || null, tags: tags.value });
       toast("프로젝트를 만들었습니다");
       location.hash = `#/project/${p.id}`;
     } }],

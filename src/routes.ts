@@ -84,6 +84,10 @@ add("DELETE", "/api/projects/:id", async (_r, env, ctx, p) => {
   return json({ ok: true });
 });
 add("PUT", "/api/projects/:id/stages/:stage", async (req, env, ctx, p) => json(await P.updateStage(env, ctx, p.id, p.stage, await readJson(req))));
+add("POST", "/api/projects/:id/advance", async (req, env, ctx, p) => {
+  const b = await readJson<{ to?: unknown }>(req);
+  return json(await P.advanceStage(env, ctx, p.id, b.to));
+});
 add("GET", "/api/projects/:id/report", async (_r, env, ctx, p, url) =>
   reportResponse(await R.projectReport(env, ctx, p.id, q(url, "format") || "html", { from: q(url, "from"), to: q(url, "to"), include_comments: q(url, "comments") !== "0" }), q(url, "download") === "1")
 );

@@ -40,7 +40,8 @@
 | GET | `/api/projects/:id` | 상세: 카드 필드 + `stages[6], tasks[], members[], recent_entries[], can_edit, can_review` |
 | PATCH | `/api/projects/:id` | 위 필드 중 일부. `stage` 변경 시 해당 단계가 todo 면 doing 으로. `owner_id`(리드+), `category_id`(관리자) |
 | DELETE | `/api/projects/:id` | 보관(status=archived). 데이터 유지 |
-| PUT | `/api/projects/:id/stages/:stage` | `{status: todo|doing|done, summary(마크다운, 덮어쓰기), set_current: bool}` → 상세 |
+| PUT | `/api/projects/:id/stages/:stage` | `{summary(마크다운, 덮어쓰기)}` → 상세. 상태는 흐름에서 도출됨. 호환 별칭: `set_current:true` 또는 `status:"doing"` → 그 단계로 이동, `status:"done"`(현재 단계) → 다음 단계로 |
+| POST | `/api/projects/:id/advance` | `{to?: stage}` 생략: 현재 단계 완료 → 다음 단계 (마지막 단계면 논문 완료 `status=done`). `to`: 그 단계로 이동(되돌리기 포함). 앞 단계=done, 대상=doing, 뒤=todo 로 재계산 |
 | GET | `/api/projects/:id/report?format=html|md|json&from=&to=&comments=0&download=1` | 프로젝트 보고서 |
 
 프로젝트 카드 필드: `id, category_id, category_name, owner_id, owner_name, title, summary, stage, status, target_venue, deadline, tags, created_at, updated_at, entry_count, last_entry_date, last_entry_at, open_tasks, review_requested, stage_done`
