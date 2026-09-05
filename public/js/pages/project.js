@@ -241,13 +241,33 @@ function renderStages(body, container) {
       else flowBtn = h("button.btn.sm", { onclick: () => advance(p, container, s.stage) }, "여기까지 진행");
     }
     const statusPill = pill(STAGE_STATUS_LABEL[s.status], s.status === "done" ? "ok" : s.status === "doing" ? "warn" : "mute");
+    // 이 단계의 날짜별 기록을 카드 안에서 펼쳐 본다 (타임라인으로 이동하지 않음)
+    const rollout = h("div", { style: { display: "none", marginTop: "12px", paddingTop: "12px", borderTop: "1px dashed var(--rule)" } });
+    let loaded = false;
+    const toggle = s.entry_count ? h("button.btn.ghost.xs", { onclick: async () => {
+      const open = rollout.style.display === "none";
+      rollout.style.display = open ? "" : "none";
+      toggle.textContent = open ? "기록 접기 ▲" : `기록 ${s.entry_count}건 펼치기 ▼`;
+      if (open && !loaded) {
+        loaded = true;
+        mount(rollout, h("div.loading", h("span.spinner")));
+        try {
+          const rows = await get(`/api/projects/${p.id}/entries?stage=${encodeURIComponent(s.stage)}&limit=100`);
+          mount(rollout,
+            h("div.row.between", { style: { marginBottom: "8px" } }, h("span.small.muted", `${stageLabel(s.stage)} 단계 기록 ${rows.length}건 · 최신순`), h("button.btn.ghost.xs", { onclick: () => { current.tab = "timeline"; current.stageFilter = s.stage; draw(container); } }, "타임라인에서 보기 →")),
+            h("div.stack", rows.map((e) => entryCard(e, container))),
+          );
+        } catch (ex) { mount(rollout, h("div.small.muted", `불러오기 실패: ${ex.message}`)); loaded = false; }
+      }
+    } }, `기록 ${s.entry_count}건 펼치기 ▼`) : null;
     const card = h("div.card.stage-card", { id: `stage-${s.stage}`, style: isCurrent ? { borderColor: "var(--navy)" } : idx > curIdx && p.status !== "done" ? { opacity: ".85" } : {} },
-      h("div.sc-h", h("h3", `${idx + 1}. ${stageLabel(s.stage)}`), statusPill, isCurrent ? pill("현재", "navy sm") : null, s.entry_count ? h("a.tiny.muted", { href: "#", onclick: (ev) => { ev.preventDefault(); current.tab = "timeline"; current.stageFilter = s.stage; draw(container); } }, `기록 ${s.entry_count}건 보기`) : null, h("span.spacer"),
+      h("div.sc-h", h("h3", `${idx + 1}. ${stageLabel(s.stage)}`), statusPill, isCurrent ? pill("현재", "navy sm") : null, toggle, h("span.spacer"),
         p.can_edit ? [flowBtn, editBtn, save] : null),
       h("div.hint", stageHint(s.stage), s.updated_by ? ` · 갱신 ${fmtRel(s.updated_at)}` : ""),
       stageMilestone(s.stage) ? h("div.tiny", { style: { color: "var(--gold)", fontWeight: 700 } }, "⏱ 마일스톤: " + stageMilestone(s.stage)) : null,
       s.summary ? view : h("div.small.muted", { style: { fontStyle: "italic" } }, "아직 정리되지 않았습니다."),
       editing,
+      rollout,
     );
     if (!s.summary) view.style.display = "none";
     if (current.focusStage === s.stage) { setTimeout(() => card.scrollIntoView({ block: "center", behavior: "smooth" }), 50); current.focusStage = null; }
