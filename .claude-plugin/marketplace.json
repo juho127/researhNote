@@ -1,0 +1,18 @@
+{
+  "name": "research-note",
+  "owner": { "name": "juho127" },
+  "metadata": {
+    "description": "연구노트(Research Note) — 논문 진행 기록 MCP 연동 플러그인 (스킬 + 슬래시 커맨드)",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "research-note",
+      "source": "./integrations/claude-code/research-note",
+      "description": "연구노트 MCP 서버 연결 + 기록 스킬 + /research-note:log, :status, :review, :report 커맨드",
+      "version": "1.0.0",
+      "author": { "name": "juho127" },
+      "keywords": ["research", "lab-notebook", "mcp", "paper"]
+    }
+  ]
+}

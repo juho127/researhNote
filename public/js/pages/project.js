@@ -1,0 +1,298 @@
+import { state, get, post, patch, put, del, h, mount, clear, pill, avatar, stages, stageLabel, stageHint, stageSelect, fmtRel, fmtDT, weekday, today, daysAgo, input, textarea, field, select, modal, confirmDialog, toast, errToast, mdEl, openReport, downloadFile, projectProgress, STATUS_LABEL, STAGE_STATUS_LABEL, REVIEW_LABEL, REVIEW_CLASS } from "../core.js";
+
+let current = null; // { project, tab, filters }
+
+export async function render(container, projectId, query) {
+  mount(container, h("div.loading", h("span.spinner"), " 불러오는 중…"));
+  const project = await get(`/api/projects/${projectId}`);
+  current = { project, tab: query.tab || "timeline", entryFocus: query.entry || null, stageFilter: query.stage || "", reviewFilter: query.review || "" };
+  draw(container);
+  return project;
+}
+
+async function reload(container) {
+  current.project = await get(`/api/projects/${current.project.id}`);
+  draw(container);
+}
+
+function draw(container) {
+  const p = current.project;
+  const me = state.me;
+  const header = h("header.hero", { style: { padding: "20px 0 16px" } },
+    h("div.eyebrow", h("a", { href: `#/team/${p.category_id}` }, p.category_name), " · ", STATUS_LABEL[p.status]),
+    h("div.row.between.top",
+      h("div", { style: { flex: 1, minWidth: "260px" } },
+        h("h1", p.title),
+        p.summary ? h("p.sub", { style: { maxWidth: "760px" } }, p.summary) : null,
+        h("div.row", { style: { marginTop: "10px", gap: "8px" } },
+          h("span.row", { style: { gap: "5px" } }, avatar(p.owner_name), p.owner_name),
+          p.target_venue ? h("span.tag", p.target_venue) : null,
+          p.deadline ? h("span.tag", `마감 ${p.deadline}`) : null,
+          ...(p.tags ? p.tags.split(",").filter(Boolean).map((t) => h("span.tag", "#" + t.trim())) : []),
+          h("span.small.muted", `기록 ${p.entry_count}건 · ${p.last_entry_at ? "마지막 " + fmtRel(p.last_entry_at) : "기록 없음"}`),
+        ),
+      ),
+      h("div.row",
+        h("button.btn", { onclick: () => reportDialog(p) }, "보고서"),
+        p.can_edit ? h("button.btn", { onclick: () => editProjectDialog(p, container) }, "수정") : null,
+        p.can_edit ? h("button.btn.primary", { onclick: () => entryEditor(p, null, container) }, "+ 기록 추가") : null,
+      ),
+    ),
+    h("div.stepper", { style: { marginTop: "16px" } }, p.stages.map((s) => h("div.step." + s.status + (p.stage === s.stage ? ".current" : ""), {
+      title: stageHint(s.stage) + (p.can_edit ? " · 클릭: 단계별 정리" : ""),
+      onclick: () => { current.tab = "stages"; current.focusStage = s.stage; draw(container); },
+    }, h("div.s-l", stageLabel(s.stage)), h("div.s-s", STAGE_STATUS_LABEL[s.status], s.entry_count ? ` · 기록 ${s.entry_count}` : null)))),
+  );
+
+  const tabs = h("div.tabs");
+  const tabDefs = [["timeline", "타임라인", p.entry_count], ["stages", "단계별 정리", p.stage_done + "/" + p.stages.length], ["tasks", "할 일", p.open_tasks], ["members", "팀"]];
+  for (const [k, l, n] of tabDefs) tabs.append(h("button", { class: current.tab === k ? "active" : "", onclick: () => { current.tab = k; draw(container); } }, l, n !== undefined && n !== null ? h("span.n", String(n)) : null));
+
+  const body = h("div");
+  mount(container, header, tabs, body);
+  if (current.tab === "timeline") renderTimeline(body, container);
+  else if (current.tab === "stages") renderStages(body, container);
+  else if (current.tab === "tasks") renderTasks(body, container);
+  else renderMembers(body);
+}
+
+// ---------- 타임라인 ----------
+async function renderTimeline(body, container) {
+  const p = current.project;
+  mount(body, h("div.loading", h("span.spinner")));
+  const qs = new URLSearchParams({ limit: "200" });
+  if (current.stageFilter) qs.set("stage", current.stageFilter);
+  if (current.reviewFilter) qs.set("review_status", current.reviewFilter);
+  const entries = await get(`/api/projects/${p.id}/entries?${qs}`);
+
+  const stageSel = select([{ value: "", label: "모든 단계" }, ...stages().map((s) => ({ value: s.id, label: s.label }))], { value: current.stageFilter, onchange: (e) => { current.stageFilter = e.target.value; renderTimeline(body, container); } });
+  const reviewSel = select([{ value: "", label: "모든 검토 상태" }, { value: "requested", label: "검토 요청" }, { value: "changes_requested", label: "수정 요청" }, { value: "approved", label: "승인" }], { value: current.reviewFilter, onchange: (e) => { current.reviewFilter = e.target.value; renderTimeline(body, container); } });
+  const toolbar = h("div.row", { style: { marginBottom: "14px" } }, h("div", { style: { width: "160px" } }, stageSel), h("div", { style: { width: "170px" } }, reviewSel), h("span.spacer"), h("span.small.muted", `${entries.length}건`));
+
+  if (!entries.length) { mount(body, toolbar, h("div.empty", p.can_edit ? "아직 기록이 없습니다. [+ 기록 추가]로 오늘 한 일을 남겨보세요." : "아직 기록이 없습니다")); return; }
+
+  const tl = h("div.timeline");
+  let lastDate = null, dayEl = null;
+  for (const e of entries) {
+    if (e.date !== lastDate) {
+      lastDate = e.date;
+      dayEl = h("div.day", h("div.d", e.date, h("small", weekday(e.date))), h("div.stack"));
+      tl.append(dayEl);
+    }
+    dayEl.lastChild.append(entryCard(e, container));
+  }
+  mount(body, toolbar, tl);
+  if (current.entryFocus) {
+    const el = body.querySelector(`[data-entry="${current.entryFocus}"]`);
+    if (el) { el.scrollIntoView({ block: "center" }); el.style.boxShadow = "0 0 0 3px rgba(47,163,169,.35)"; setTimeout(() => (el.style.boxShadow = ""), 2500); }
+    current.entryFocus = null;
+  }
+}
+
+function entryCard(e, container) {
+  const p = current.project;
+  const me = state.me;
+  const long = (e.content || "").length > 600 || (e.content || "").split("\n").length > 14;
+  const bodyEl = mdEl(e.content || "", "e-b md" + (long ? " clamp" : ""));
+  const more = long ? h("button.btn.ghost.xs", { onclick: () => { bodyEl.classList.toggle("clamp"); more.textContent = bodyEl.classList.contains("clamp") ? "더 보기" : "접기"; } }, "더 보기") : null;
+  const comments = h("div.comments");
+  const card = h("div.card.entry.rv-" + e.review_status, { dataset: { entry: e.id } },
+    h("div.e-h", h("div.e-t", e.title), pill(stageLabel(e.stage)), e.source === "mcp" ? pill("AI 기록", "ai") : null, e.review_status !== "none" ? pill(REVIEW_LABEL[e.review_status], REVIEW_CLASS[e.review_status]) : null),
+    h("div.e-m", avatar(e.author_name), h("span", e.author_name), h("span", "·"), h("span", fmtDT(e.created_at)), e.updated_at !== e.created_at ? h("span.tiny", `(수정 ${fmtRel(e.updated_at)})`) : null),
+    e.content ? bodyEl : null,
+    more,
+    h("div.e-actions",
+      e.can_edit ? h("button.btn.xs", { onclick: () => entryEditor(p, e, container) }, "수정") : null,
+      e.can_edit ? h("button.btn.xs.danger", { onclick: async () => { if (await confirmDialog("이 기록을 삭제할까요? 코멘트도 함께 삭제됩니다.", { danger: true, okLabel: "삭제" })) { await del(`/api/entries/${e.id}`); toast("삭제했습니다"); reload(container); } } }, "삭제") : null,
+      (e.author_id === me.user.id || p.can_review) && e.review_status !== "requested" ? h("button.btn.xs", { onclick: () => setReview(e, "requested", container) }, "검토 요청") : null,
+      (e.author_id === me.user.id || p.can_review) && e.review_status === "requested" ? h("button.btn.xs", { onclick: () => setReview(e, "none", container) }, "요청 취소") : null,
+      p.can_review && e.review_status !== "approved" ? h("button.btn.xs.mint", { onclick: () => reviewDialog(e, "approved", container) }, "승인") : null,
+      p.can_review && e.review_status !== "changes_requested" ? h("button.btn.xs", { onclick: () => reviewDialog(e, "changes_requested", container) }, "수정 요청") : null,
+      h("span.spacer"),
+      h("button.btn.ghost.xs", { onclick: () => toggleComments(e, comments) }, e.comment_count ? `코멘트 ${e.comment_count}` : "코멘트"),
+    ),
+    comments,
+  );
+  comments.hidden = true;
+  if (e.comment_count && (e.review_status === "requested" || e.review_status === "changes_requested")) toggleComments(e, comments);
+  return card;
+}
+
+async function toggleComments(e, box) {
+  if (!box.hidden && box.dataset.loaded) { box.hidden = true; return; }
+  box.hidden = false;
+  if (!box.dataset.loaded) { mount(box, h("span.spinner")); await loadComments(e, box); }
+}
+async function loadComments(e, box) {
+  const full = await get(`/api/entries/${e.id}`);
+  box.dataset.loaded = "1";
+  const me = state.me;
+  const list = full.comments.map((c) => h("div.cmt." + c.kind, avatar(c.author_name), h("div.c-b", h("div.c-m", h("b", c.author_name), " · ", c.kind === "approve" ? pill("승인", "ok sm") : c.kind === "request_changes" ? pill("수정 요청", "warn sm") : null, " ", fmtDT(c.created_at),
+    (c.author_id === me.user.id || me.is_admin) ? h("button.btn.ghost.xs", { style: { marginLeft: "6px" }, onclick: async () => { if (await confirmDialog("코멘트를 삭제할까요?", { danger: true, okLabel: "삭제" })) { await del(`/api/comments/${c.id}`); e.comment_count--; await loadComments(e, box); } } }, "삭제") : null),
+    mdEl(c.content))));
+  const ta = textarea({ placeholder: "코멘트를 남기세요 (마크다운)", rows: 2 });
+  const btn = h("button.btn.sm.primary", { onclick: async () => {
+    if (!ta.value.trim()) return;
+    btn.disabled = true;
+    try { await post(`/api/entries/${e.id}/comments`, { content: ta.value }); e.comment_count = (e.comment_count || 0) + 1; await loadComments(e, box); } catch (ex) { errToast(ex); btn.disabled = false; }
+  } }, "남기기");
+  mount(box, list.length ? list : h("div.small.muted", "아직 코멘트가 없습니다"), h("div.cmt-form", ta, btn));
+}
+
+async function setReview(e, status, container) {
+  try { await post(`/api/entries/${e.id}/review`, { status }); toast(status === "requested" ? "검토를 요청했습니다" : "검토 요청을 취소했습니다"); reload(container); } catch (ex) { errToast(ex); }
+}
+function reviewDialog(e, status, container) {
+  const note = textarea({ placeholder: status === "approved" ? "승인 의견 (선택)" : "무엇을 수정해야 하는지 구체적으로", rows: 4 });
+  modal({
+    title: status === "approved" ? `승인 — ${e.title}` : `수정 요청 — ${e.title}`,
+    body: field("코멘트", note),
+    actions: [{ label: "취소" }, { label: status === "approved" ? "승인" : "수정 요청", cls: status === "approved" ? "mint" : "primary", onClick: async () => { await post(`/api/entries/${e.id}/review`, { status, note: note.value }); toast("처리했습니다"); reload(container); } }],
+  });
+}
+
+export function entryEditor(p, e, container) {
+  const date = input({ type: "date", value: e?.date || today() });
+  const stage = stageSelect(e?.stage || p.stage);
+  const title = input({ value: e?.title || "", placeholder: "한 줄 제목 — 결과가 드러나게", maxlength: 200 });
+  const content = textarea({ rows: 14, value: e?.content ?? "## 한 일\n- \n\n## 결과\n- \n\n## 다음 할 일\n- [ ] \n\n## 메모\n- " });
+  const review = h("input", { type: "checkbox", checked: e?.review_status === "requested" });
+  const preview = h("div.md", { style: { display: "none", minHeight: "200px", border: "1px solid var(--rule)", borderRadius: "9px", padding: "10px 12px", background: "#fff" } });
+  const seg = h("div.seg", h("button.active", { onclick: (ev) => { swap(ev.target, false); } }, "편집"), h("button", { onclick: (ev) => { swap(ev.target, true); } }, "미리보기"));
+  function swap(btn, showPreview) { seg.querySelectorAll("button").forEach((b) => b.classList.remove("active")); btn.classList.add("active"); if (showPreview) { preview.innerHTML = mdEl(content.value).innerHTML; preview.style.display = ""; content.style.display = "none"; } else { preview.style.display = "none"; content.style.display = ""; } }
+  content.addEventListener("keydown", (ev) => { if (ev.key === "Tab") { ev.preventDefault(); const s = content.selectionStart; content.setRangeText("  ", s, content.selectionEnd, "end"); } });
+  modal({
+    title: e ? "기록 수정" : "기록 추가",
+    wide: true,
+    body: h("div.stack",
+      h("div.form-grid", field("연구일", date), field("단계", stage)),
+      field("제목", title),
+      h("div.field", h("div.row.between", h("span", "내용 (마크다운)"), seg), content, preview, h("span.help", "표(| a | b |), 코드(```), 체크박스(- [ ]), 링크 지원. Tab 으로 들여쓰기.")),
+      e ? null : h("label.check", review, "리드에게 검토 요청"),
+    ),
+    actions: [{ label: "취소" }, { label: e ? "저장" : "기록 저장", cls: "primary", onClick: async () => {
+      if (!title.value.trim()) { toast("제목을 입력하세요", true); return false; }
+      if (e) await patch(`/api/entries/${e.id}`, { date: date.value, stage: stage.value, title: title.value.trim(), content: content.value });
+      else await post(`/api/projects/${p.id}/entries`, { date: date.value, stage: stage.value, title: title.value.trim(), content: content.value, review_status: review.checked ? "requested" : "none" });
+      toast(e ? "수정했습니다" : "기록을 저장했습니다");
+      current.tab = "timeline";
+      reload(container);
+    } }],
+  });
+  setTimeout(() => title.focus(), 50);
+}
+
+// ---------- 단계별 정리 ----------
+function renderStages(body, container) {
+  const p = current.project;
+  const grid = h("div.stack");
+  for (const s of p.stages) {
+    const isCurrent = p.stage === s.stage;
+    const status = select([{ value: "todo", label: "예정" }, { value: "doing", label: "진행 중" }, { value: "done", label: "완료" }], { value: s.status, disabled: !p.can_edit, style: { width: "110px" } });
+    const ta = textarea({ value: s.summary || "", rows: Math.max(4, Math.min(18, (s.summary || "").split("\n").length + 2)), placeholder: `${stageLabel(s.stage)} 단계의 누적 정리 — ${stageHint(s.stage)}. 논문 해당 절의 뼈대가 되도록 마크다운으로.`, disabled: !p.can_edit });
+    const view = mdEl(s.summary || "");
+    const editing = h("div.stack", { style: { display: "none" } }, ta);
+    const save = h("button.btn.sm.primary", { onclick: async () => {
+      save.disabled = true;
+      try { await put(`/api/projects/${p.id}/stages/${s.stage}`, { status: status.value, summary: ta.value }); toast("저장했습니다"); await reload(container); } catch (ex) { errToast(ex); save.disabled = false; }
+    } }, "저장");
+    const editBtn = h("button.btn.sm", { onclick: () => { const on = editing.style.display === "none"; editing.style.display = on ? "" : "none"; view.style.display = on ? "none" : ""; editBtn.textContent = on ? "편집 닫기" : "편집"; if (on) ta.focus(); } }, "편집");
+    const setCur = !isCurrent && p.can_edit ? h("button.btn.sm", { onclick: async () => { await put(`/api/projects/${p.id}/stages/${s.stage}`, { set_current: true, status: s.status === "todo" ? "doing" : s.status }); toast(`현재 단계를 ${stageLabel(s.stage)}(으)로 변경`); reload(container); } }, "현재 단계로") : null;
+    const card = h("div.card.stage-card", { id: `stage-${s.stage}` },
+      h("div.sc-h", h("h3", stageLabel(s.stage)), isCurrent ? pill("현재", "navy sm") : null, s.entry_count ? h("a.tiny.muted", { href: "#", onclick: (ev) => { ev.preventDefault(); current.tab = "timeline"; current.stageFilter = s.stage; draw(container); } }, `기록 ${s.entry_count}건 보기`) : null, h("span.spacer"),
+        p.can_edit ? [status, setCur, editBtn, save] : pill(STAGE_STATUS_LABEL[s.status], s.status === "done" ? "ok" : s.status === "doing" ? "warn" : "mute")),
+      h("div.hint", stageHint(s.stage), s.updated_by ? ` · 갱신 ${fmtRel(s.updated_at)}` : ""),
+      s.summary ? view : h("div.small.muted", { style: { fontStyle: "italic" } }, "아직 정리되지 않았습니다."),
+      editing,
+    );
+    if (!s.summary) view.style.display = "none";
+    if (current.focusStage === s.stage) { setTimeout(() => card.scrollIntoView({ block: "center", behavior: "smooth" }), 50); current.focusStage = null; }
+    grid.append(card);
+  }
+  mount(body, h("p.small.muted", { style: { margin: "0 0 12px" } }, "각 단계의 누적 결론을 정리합니다. 날짜별 기록은 타임라인에, 그 기록들이 모여 만든 결론은 여기에 — 보고서와 논문 초고의 뼈대가 됩니다. AI 도구(MCP)의 update_stage 로도 갱신됩니다."), grid);
+}
+
+// ---------- 할 일 ----------
+async function renderTasks(body, container) {
+  const p = current.project;
+  const me = state.me;
+  const tasks = p.tasks;
+  const title = input({ placeholder: "할 일 추가 — 예: 시드 5개로 반복 실험" });
+  const due = input({ type: "date", style: { width: "150px" } });
+  const assignee = select([{ value: "", label: "담당 없음" }, ...p.members.map((m) => ({ value: m.id, label: m.name }))], { value: p.owner_id, style: { width: "140px" } });
+  const add = h("button.btn.primary.sm", { onclick: async () => {
+    if (!title.value.trim()) return;
+    try { await post(`/api/projects/${p.id}/tasks`, { title: title.value.trim(), due: due.value || null, assignee_id: assignee.value || null }); title.value = ""; toast("추가했습니다"); reload(container); } catch (ex) { errToast(ex); }
+  } }, "추가");
+  title.addEventListener("keydown", (ev) => { if (ev.key === "Enter") add.click(); });
+  const form = h("div.card.pad-s", h("div.row", h("div", { style: { flex: 1, minWidth: "220px" } }, title), due, assignee, add));
+  const list = h("div.card");
+  const todayStr = today();
+  if (!tasks.length) list.append(h("div.small.muted", "할 일이 없습니다"));
+  for (const t of tasks) {
+    const cb = h("input", { type: "checkbox", checked: t.status === "done", onchange: async () => { try { await patch(`/api/tasks/${t.id}`, { status: cb.checked ? "done" : "todo" }); reload(container); } catch (ex) { errToast(ex); cb.checked = !cb.checked; } } });
+    const over = t.due && t.status !== "done" && t.due < todayStr;
+    list.append(h("div.task." + t.status, cb,
+      h("div", { style: { flex: 1 } }, h("div.t-t", t.title), h("div.t-m", t.assignee_name ? h("span", "@" + t.assignee_name) : null, t.due ? h("span.due" + (over ? ".over" : ""), `기한 ${t.due}${over ? " (지남)" : ""}`) : null, t.stage ? pill(stageLabel(t.stage), "sm") : null, t.status === "doing" ? pill("진행 중", "warn sm") : null)),
+      t.status !== "done" ? h("button.btn.xs", { onclick: async () => { await patch(`/api/tasks/${t.id}`, { status: t.status === "doing" ? "todo" : "doing" }); reload(container); } }, t.status === "doing" ? "대기로" : "진행 중") : null,
+      h("button.btn.ghost.xs", { onclick: () => taskEditor(t, p, container) }, "수정"),
+      (p.can_edit || t.created_by === me.user.id) ? h("button.btn.ghost.xs.danger", { onclick: async () => { if (await confirmDialog("할 일을 삭제할까요?", { danger: true, okLabel: "삭제" })) { await del(`/api/tasks/${t.id}`); reload(container); } } }, "삭제") : null,
+    ));
+  }
+  mount(body, h("div.stack", form, list));
+}
+function taskEditor(t, p, container) {
+  const title = input({ value: t.title });
+  const due = input({ type: "date", value: t.due || "" });
+  const assignee = select([{ value: "", label: "담당 없음" }, ...p.members.map((m) => ({ value: m.id, label: m.name }))], { value: t.assignee_id || "" });
+  const stage = stageSelect(t.stage || "", [{ value: "", label: "단계 없음" }]);
+  modal({ title: "할 일 수정", body: h("div.stack", field("내용", title), h("div.form-grid", field("기한", due), field("담당", assignee), field("단계", stage))),
+    actions: [{ label: "취소" }, { label: "저장", cls: "primary", onClick: async () => { await patch(`/api/tasks/${t.id}`, { title: title.value, due: due.value || null, assignee_id: assignee.value || null, stage: stage.value || null }); reload(container); } }] });
+}
+
+// ---------- 팀 ----------
+function renderMembers(body) {
+  const p = current.project;
+  mount(body, h("div.grid.c3", p.members.map((m) => h("div.card.pad-s", h("div.row", avatar(m.name), h("b", m.name), m.role === "lead" ? pill("리드", "gold sm") : null, m.id === p.owner_id ? pill("담당", "navy sm") : null)))),
+    h("p.small.muted", { style: { marginTop: "12px" } }, "같은 카테고리 구성원은 이 프로젝트의 기록을 읽고 코멘트할 수 있습니다. 기록 작성은 담당자·리드·관리자, 승인/수정요청은 리드·관리자."));
+}
+
+// ---------- 프로젝트 수정 / 보고서 ----------
+function editProjectDialog(p, container) {
+  const me = state.me;
+  const title = input({ value: p.title, maxlength: 200 });
+  const summary = textarea({ value: p.summary, rows: 3 });
+  const venue = input({ value: p.target_venue });
+  const deadline = input({ type: "date", value: p.deadline || "" });
+  const tags = input({ value: p.tags });
+  const status = select([{ value: "active", label: "진행 중" }, { value: "paused", label: "일시 중지" }, { value: "done", label: "완료" }, { value: "archived", label: "보관" }], { value: p.status });
+  const owner = select(p.members.map((m) => ({ value: m.id, label: m.name })), { value: p.owner_id, disabled: !(me.is_admin || p.can_review) });
+  modal({
+    title: "프로젝트 수정",
+    body: h("div.stack", field("제목", title), field("연구 요약", summary), h("div.form-grid", field("목표 학회/저널", venue), field("마감", deadline), field("상태", status), field("담당", owner, me.is_admin || p.can_review ? "" : "리드·관리자만 변경 가능")), field("태그", tags)),
+    actions: [
+      { label: "보관(삭제)", cls: "danger", closeAfter: true, onClick: async () => { if (!(await confirmDialog("프로젝트를 보관 처리할까요? 목록에서 숨겨지며 기록은 유지됩니다.", { danger: true, okLabel: "보관" }))) return false; await del(`/api/projects/${p.id}`); toast("보관했습니다"); location.hash = `#/team/${p.category_id}`; } },
+      { label: "취소" },
+      { label: "저장", cls: "primary", onClick: async () => {
+        const b = { title: title.value.trim(), summary: summary.value, target_venue: venue.value, deadline: deadline.value || null, tags: tags.value, status: status.value };
+        if (owner.value !== p.owner_id) b.owner_id = owner.value;
+        await patch(`/api/projects/${p.id}`, b); toast("저장했습니다"); reload(container);
+      } },
+    ],
+  });
+}
+
+function reportDialog(p) {
+  const from = input({ type: "date", value: daysAgo(30) });
+  const to = input({ type: "date", value: today() });
+  const all = h("input", { type: "checkbox", checked: true });
+  const q = () => (all.checked ? "" : `&from=${from.value}&to=${to.value}`);
+  modal({
+    title: `진행 보고서 — ${p.title}`,
+    body: h("div.stack", h("label.check", all, "전체 기간"), h("div.form-grid", field("시작", from), field("종료", to)), h("p.help", "HTML 보고서는 새 탭에서 열리며 상단 [인쇄 / PDF 저장] 버튼으로 PDF 를 만들 수 있습니다. 단계별 정리 + 날짜별 기록 + 검토 코멘트가 논문 흐름 순서로 정리됩니다.")),
+    actions: [
+      { label: "Markdown 다운로드", onClick: () => downloadFile(`/api/projects/${p.id}/report?format=md&download=1${q()}`, `${p.title}-report.md`) },
+      { label: "HTML 보고서 열기", cls: "primary", onClick: () => openReport(`/api/projects/${p.id}/report?format=html${q()}`) },
+    ],
+  });
+}

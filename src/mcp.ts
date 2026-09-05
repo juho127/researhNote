@@ -1,0 +1,565 @@
+/**
+ * 연구노트 MCP 서버 — Streamable HTTP (stateless) / JSON-RPC 2.0
+ *
+ * 연구자가 쓰는 AI 도구(Claude Code, Cursor, Claude Desktop, Codex 등)가 이 엔드포인트를 등록하면
+ * 별도 설치 없이 도구(tools)·프롬프트·리소스로 연구 진행을 읽고 기록할 수 있다.
+ *
+ *   POST /mcp   JSON-RPC 요청(단건/배치). 알림(id 없음)은 202.
+ *   GET  /mcp   405 (서버 발신 스트림 미사용)
+ *   DELETE /mcp 200 (세션 종료 no-op)
+ */
+import type { AuthContext, Env } from "./env";
+import { STAGES, STAGE_LABELS, STAGE_HINTS } from "./env";
+import { authenticate } from "./lib/auth";
+import { HttpError, CORS_HEADERS } from "./lib/http";
+import { todayIn } from "./lib/time";
+import * as P from "./services/projects";
+import * as E from "./services/entries";
+import * as T from "./services/tasks";
+import * as F from "./services/feed";
+import * as R from "./services/report";
+import { SKILL_MD, SKILL_SHORT } from "./skill";
+
+const SERVER_NAME = "research-note";
+const SERVER_VERSION = "1.0.0";
+const SUPPORTED_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
+
+interface JsonRpcRequest {
+  jsonrpc: "2.0";
+  id?: string | number | null;
+  method: string;
+  params?: Record<string, unknown>;
+}
+
+interface ToolDef {
+  name: string;
+  title?: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  handler: (env: Env, ctx: AuthContext, args: Record<string, unknown>) => Promise<{ text: string; data?: unknown }>;
+}
+
+const stageEnum = { type: "string", enum: [...STAGES], description: `연구 단계: ${STAGES.map((s) => `${s}=${STAGE_LABELS[s]}`).join(", ")}` };
+const idProp = (d: string) => ({ type: "string", description: d });
+const dateProp = (d: string) => ({ type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: `${d} (YYYY-MM-DD)` });
+const j = (v: unknown) => JSON.stringify(v, null, 2);
+const s = (v: unknown) => (v === undefined || v === null ? undefined : String(v));
+
+function projectSummaryMd(p: P.ProjectDetail): string {
+  const L = [
+    `# ${p.title}`,
+    `- id: ${p.id} · 카테고리: ${p.category_name} (${p.category_id}) · 담당: ${p.owner_name}`,
+    `- 현재 단계: ${STAGE_LABELS[p.stage]} (${p.stage}) · 상태: ${p.status}${p.target_venue ? ` · 목표: ${p.target_venue}` : ""}${p.deadline ? ` · 마감: ${p.deadline}` : ""}`,
+    `- 기록 ${p.entry_count}건 · 완료 단계 ${p.stage_done}/${STAGES.length} · 미완료 할 일 ${p.open_tasks}건 · 검토 대기 ${p.review_requested}건`,
+  ];
+  if (p.summary) L.push("", `## 연구 요약`, p.summary);
+  L.push("", `## 단계별 정리`);
+  for (const st of p.stages) {
+    L.push(`### ${STAGE_LABELS[st.stage]} [${st.status}]${st.entry_count ? ` (기록 ${st.entry_count})` : ""}`);
+    L.push(st.summary?.trim() ? st.summary.trim() : `_(미정리 · ${STAGE_HINTS[st.stage]})_`);
+  }
+  if (p.tasks.length) {
+    L.push("", `## 할 일`);
+    for (const t of p.tasks) L.push(`- [${t.status === "done" ? "x" : " "}] (${t.id}) ${t.title}${t.assignee_name ? ` @${t.assignee_name}` : ""}${t.due ? ` · ${t.due}` : ""}${t.status === "doing" ? " · 진행 중" : ""}`);
+  }
+  if (p.recent_entries.length) {
+    L.push("", `## 최근 기록`);
+    for (const e of p.recent_entries) L.push(`- ${e.date} [${STAGE_LABELS[e.stage]}] ${e.title} (${e.id}, ${e.author_name}${e.review_status !== "none" ? `, ${e.review_status}` : ""}${e.comment_count ? `, 코멘트 ${e.comment_count}` : ""})`);
+  }
+  return L.join("\n");
+}
+
+const TOOLS: ToolDef[] = [
+  {
+    name: "whoami",
+    title: "내 정보와 소속·프로젝트",
+    description: "현재 토큰의 사용자, 소속 카테고리(팀), 내 프로젝트 목록을 반환한다. 세션 시작 시 먼저 호출해 어느 프로젝트에 기록할지 정한다.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    handler: async (env, ctx) => {
+      const m = await F.me(env, ctx);
+      const L = [`사용자: ${m.user.name} (${m.user.id})${m.is_admin ? " · 관리자" : ""}`, `오늘(${env.APP_TZ}): ${todayIn(env.APP_TZ)}`];
+      L.push(`소속 카테고리: ${m.memberships.length ? m.memberships.map((x) => `${x.category_name} (${x.category_id}, ${x.role})`).join(", ") : "없음"}`);
+      L.push(`내 프로젝트 ${m.my_projects.length}건:`);
+      for (const p of m.my_projects) L.push(`- ${p.title} (${p.id}) · ${STAGE_LABELS[p.stage]} · ${p.status} · 기록 ${p.entry_count}건 · 마지막 ${p.last_entry_date ?? "없음"}`);
+      L.push("", `단계: ${STAGES.map((st) => `${st}=${STAGE_LABELS[st]}`).join(", ")}`);
+      return { text: L.join("\n"), data: m };
+    },
+  },
+  {
+    name: "list_projects",
+    title: "프로젝트 목록",
+    description: "열람 가능한 프로젝트 목록(같은 카테고리 팀원 것 포함). category_id 로 팀 한정, mine=true 로 내 것만.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        category_id: idProp("카테고리 ID (생략 시 소속 전체)"),
+        mine: { type: "boolean", description: "내 프로젝트만" },
+        status: { type: "string", enum: ["active", "paused", "done", "archived", "all"], description: "기본 active" },
+        q: { type: "string", description: "제목/요약/태그 검색어" },
+      },
+      additionalProperties: false,
+    },
+    handler: async (env, ctx, a) => {
+      const rows = await P.listProjects(env, ctx, { category_id: s(a.category_id), owner_id: a.mine ? ctx.user.id : undefined, status: s(a.status), q: s(a.q) });
+      const text = rows.length
+        ? rows.map((p) => `- ${p.title} (${p.id}) · ${p.category_name} · ${p.owner_name} · ${STAGE_LABELS[p.stage]} · ${p.status} · 기록 ${p.entry_count} · 마지막 ${p.last_entry_date ?? "-"}${p.review_requested ? ` · 검토대기 ${p.review_requested}` : ""}`).join("\n")
+        : "프로젝트 없음";
+      return { text, data: rows };
+    },
+  },
+  {
+    name: "get_project",
+    title: "프로젝트 상세",
+    description: "프로젝트의 메타·단계별 정리(논문 흐름)·할 일·최근 기록을 반환한다. 기록 전 현재 상태 파악용.",
+    inputSchema: { type: "object", properties: { project_id: idProp("프로젝트 ID") }, required: ["project_id"], additionalProperties: false },
+    handler: async (env, ctx, a) => {
+      const p = await P.getProjectDetail(env, ctx, String(a.project_id));
+      return { text: projectSummaryMd(p), data: p };
+    },
+  },
+  {
+    name: "create_project",
+    title: "프로젝트(논문) 생성",
+    description: "새 논문 프로젝트를 만든다. 사용자가 명시적으로 새 연구를 시작할 때만 사용.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        category_id: idProp("카테고리 ID (whoami 참고)"),
+        title: { type: "string", description: "논문/연구 제목" },
+        summary: { type: "string", description: "연구 질문·한 줄 요약" },
+        stage: stageEnum,
+        target_venue: { type: "string", description: "목표 학회/저널" },
+        deadline: dateProp("마감일"),
+        tags: { type: "array", items: { type: "string" } },
+      },
+      required: ["category_id", "title"],
+      additionalProperties: false,
+    },
+    handler: async (env, ctx, a) => {
+      const p = await P.createProject(env, ctx, a);
+      return { text: `생성됨: ${p.title} (${p.id})\n\n` + projectSummaryMd(p), data: p };
+    },
+  },
+  {
+    name: "update_project",
+    title: "프로젝트 메타 수정",
+    description: "제목·요약·현재 단계·상태·목표·마감·태그를 수정한다. 단계 이동은 stage 로.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: idProp("프로젝트 ID"),
+        title: { type: "string" },
+        summary: { type: "string" },
+        stage: stageEnum,
+        status: { type: "string", enum: ["active", "paused", "done", "archived"] },
+        target_venue: { type: "string" },
+        deadline: { type: ["string", "null"], description: "YYYY-MM-DD 또는 null(해제)" },
+        tags: { type: "array", items: { type: "string" } },
+      },
+      required: ["project_id"],
+      additionalProperties: false,
+    },
+    handler: async (env, ctx, a) => {
+      const { project_id, ...rest } = a;
+      const p = await P.updateProject(env, ctx, String(project_id), rest);
+      return { text: `수정됨: ${p.title} (${p.id}) · ${STAGE_LABELS[p.stage]} · ${p.status}`, data: p };
+    },
+  },
+  {
+    name: "log_progress",
+    title: "연구 진행 기록 추가 (핵심)",
+    description:
+      "날짜별 연구 진행 기록을 남긴다. 실험을 돌리거나 문헌을 정리하거나 초고를 쓴 뒤 '무엇을 했고, 결과가 어땠고, 다음에 무엇을 할지'를 마크다운으로 기록한다. " +
+      "stage 는 그 작업이 속한 논문 단계(기획/리서치/관련기법/실험결과/논문작성/검토). date 생략 시 오늘. request_review=true 면 리드에게 검토 요청.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: idProp("프로젝트 ID"),
+        title: { type: "string", description: "한 줄 제목 (예: 'ResNet-50 baseline 실험 완료, acc 91.2%')" },
+        content: { type: "string", description: "마크다운 본문. 권장 구성: ## 한 일 / ## 결과 / ## 다음 할 일 / ## 메모(막힌 점·질문)" },
+        stage: stageEnum,
+        date: dateProp("연구일"),
+        request_review: { type: "boolean", description: "검토 요청 여부" },
+      },
+      required: ["project_id", "title", "content"],
+      additionalProperties: false,
+    },
+    handler: async (env, ctx, a) => {
+      const e = await E.createEntry(env, ctx, String(a.project_id), { title: a.title, content: a.content, stage: a.stage, date: a.date, review_status: a.request_review ? "requested" : undefined });
+      return { text: `기록됨: [${e.date}] ${e.title} (${e.id}) · ${STAGE_LABELS[e.stage]}${e.review_status === "requested" ? " · 검토 요청됨" : ""}`, data: e };
+    },
+  },
+  {
+    name: "list_entries",
+    title: "기록 목록",
+    description: "날짜별 기록을 조회한다 (본문 요약 포함). project_id 또는 category_id 로 범위 지정, since/until 로 기간.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: idProp("프로젝트 ID"),
+        category_id: idProp("카테고리 ID"),
+        since: dateProp("시작일"),
+        until: dateProp("종료일"),
+        stage: stageEnum,
+        q: { type: "string", description: "제목/본문 검색어" },
+        review_status: { type: "string", enum: ["none", "requested", "changes_requested", "approved"] },
+        limit: { type: "integer", minimum: 1, maximum: 200, description: "기본 30" },
+        full: { type: "boolean", description: "본문 전체 포함 (기본 요약 280자)" },
+      },
+      additionalProperties: false,
+    },
+    handler: async (env, ctx, a) => {
+      const rows = await E.listEntries(env, ctx, { project_id: s(a.project_id), category_id: s(a.category_id), since: s(a.since), until: s(a.until), stage: s(a.stage), q: s(a.q), review_status: s(a.review_status), limit: Number(a.limit) || 30, with_content: !!a.full });
+      const text = rows.length
+        ? rows.map((e) => `### ${e.date} · ${e.title} (${e.id})\n_${e.project_title} · ${STAGE_LABELS[e.stage]} · ${e.author_name}${e.review_status !== "none" ? ` · ${e.review_status}` : ""}${e.comment_count ? ` · 코멘트 ${e.comment_count}` : ""}_\n${e.content}`).join("\n\n")
+        : "기록 없음";
+      return { text, data: rows };
+    },
+  },
+  {
+    name: "get_entry",
+    title: "기록 상세(코멘트 포함)",
+    description: "기록 하나의 전체 본문과 검토 코멘트를 반환한다.",
+    inputSchema: { type: "object", properties: { entry_id: idProp("기록 ID") }, required: ["entry_id"], additionalProperties: false },
+    handler: async (env, ctx, a) => {
+      const e = await E.getEntryFull(env, ctx, String(a.entry_id));
+      const L = [`# ${e.title}`, `- ${e.date} · ${e.project_title} · ${STAGE_LABELS[e.stage]} · ${e.author_name} · 검토: ${e.review_status}`, "", e.content];
+      if (e.comments?.length) {
+        L.push("", "## 코멘트");
+        for (const c of e.comments) L.push(`- **${c.author_name}** (${c.kind}, ${c.created_at.slice(0, 16)}): ${c.content}`);
+      }
+      return { text: L.join("\n"), data: e };
+    },
+  },
+  {
+    name: "update_entry",
+    title: "기록 수정",
+    description: "내가 쓴 기록의 제목·본문·단계·날짜를 수정한다.",
+    inputSchema: {
+      type: "object",
+      properties: { entry_id: idProp("기록 ID"), title: { type: "string" }, content: { type: "string" }, stage: stageEnum, date: dateProp("연구일") },
+      required: ["entry_id"],
+      additionalProperties: false,
+    },
+    handler: async (env, ctx, a) => {
+      const { entry_id, ...rest } = a;
+      const e = await E.updateEntry(env, ctx, String(entry_id), rest);
+      return { text: `수정됨: [${e.date}] ${e.title} (${e.id})`, data: e };
+    },
+  },
+  {
+    name: "update_stage",
+    title: "단계별 정리 갱신 (논문 뼈대)",
+    description:
+      "프로젝트의 특정 단계(기획/리서치/관련기법/실험결과/논문작성/검토)의 상태(todo/doing/done)와 정리 요약(마크다운)을 갱신한다. " +
+      "정리 요약은 그 단계까지의 누적 결론 = 논문 해당 절의 뼈대. 일별 기록은 log_progress, 누적 정리는 이 도구. set_current=true 면 프로젝트의 현재 단계로 지정.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: idProp("프로젝트 ID"),
+        stage: stageEnum,
+        status: { type: "string", enum: ["todo", "doing", "done"] },
+        summary: { type: "string", description: "누적 정리(마크다운). 기존 내용을 덮어쓰므로 get_project 로 먼저 읽고 병합할 것" },
+        set_current: { type: "boolean" },
+      },
+      required: ["project_id", "stage"],
+      additionalProperties: false,
+    },
+    handler: async (env, ctx, a) => {
+      const p = await P.updateStage(env, ctx, String(a.project_id), String(a.stage), { status: a.status, summary: a.summary, set_current: a.set_current });
+      const st = p.stages.find((x) => x.stage === a.stage)!;
+      return { text: `갱신됨: ${p.title} · ${STAGE_LABELS[st.stage]} [${st.status}]${p.stage === st.stage ? " · 현재 단계" : ""}`, data: p };
+    },
+  },
+  {
+    name: "list_tasks",
+    title: "할 일 목록",
+    description: "프로젝트의 할 일 목록.",
+    inputSchema: { type: "object", properties: { project_id: idProp("프로젝트 ID"), status: { type: "string", enum: ["todo", "doing", "done", "all"] } }, required: ["project_id"], additionalProperties: false },
+    handler: async (env, ctx, a) => {
+      const rows = await T.listTasks(env, ctx, String(a.project_id), s(a.status) ?? "all");
+      return { text: rows.length ? rows.map((t) => `- [${t.status === "done" ? "x" : t.status === "doing" ? "~" : " "}] ${t.title} (${t.id})${t.assignee_name ? ` @${t.assignee_name}` : ""}${t.due ? ` · ${t.due}` : ""}`).join("\n") : "할 일 없음", data: rows };
+    },
+  },
+  {
+    name: "add_task",
+    title: "할 일 추가",
+    description: "다음 할 일을 추가한다 (기록의 '다음 할 일'을 실제 항목으로 만들 때).",
+    inputSchema: {
+      type: "object",
+      properties: { project_id: idProp("프로젝트 ID"), title: { type: "string" }, due: dateProp("기한"), stage: stageEnum, assignee_id: idProp("담당자 사용자 ID (기본 없음)") },
+      required: ["project_id", "title"],
+      additionalProperties: false,
+    },
+    handler: async (env, ctx, a) => {
+      const t = await T.createTask(env, ctx, String(a.project_id), { title: a.title, due: a.due, stage: a.stage, assignee_id: a.assignee_id });
+      return { text: `추가됨: ${t.title} (${t.id})`, data: t };
+    },
+  },
+  {
+    name: "update_task",
+    title: "할 일 갱신",
+    description: "할 일의 상태(todo/doing/done)·제목·기한을 바꾼다.",
+    inputSchema: {
+      type: "object",
+      properties: { task_id: idProp("할 일 ID"), status: { type: "string", enum: ["todo", "doing", "done"] }, title: { type: "string" }, due: { type: ["string", "null"] }, assignee_id: { type: ["string", "null"] } },
+      required: ["task_id"],
+      additionalProperties: false,
+    },
+    handler: async (env, ctx, a) => {
+      const { task_id, ...rest } = a;
+      const t = await T.updateTask(env, ctx, String(task_id), rest);
+      return { text: `갱신됨: ${t.title} [${t.status}]`, data: t };
+    },
+  },
+  {
+    name: "add_comment",
+    title: "코멘트(검토 의견) 추가",
+    description: "팀원의 기록에 코멘트를 남긴다. 리드/관리자는 kind=approve|request_changes 로 승인·수정요청 가능.",
+    inputSchema: {
+      type: "object",
+      properties: { entry_id: idProp("기록 ID"), content: { type: "string" }, kind: { type: "string", enum: ["comment", "approve", "request_changes"] } },
+      required: ["entry_id", "content"],
+      additionalProperties: false,
+    },
+    handler: async (env, ctx, a) => {
+      const c = await E.addComment(env, ctx, String(a.entry_id), a.content, a.kind ?? "comment");
+      return { text: `코멘트 추가됨 (${c.id}, ${c.kind})`, data: c };
+    },
+  },
+  {
+    name: "set_review",
+    title: "검토 상태 변경",
+    description: "기록의 검토 상태를 바꾼다. 작성자: requested(검토 요청)/none(취소). 리드·관리자: approved/changes_requested (note 는 코멘트로 남음).",
+    inputSchema: {
+      type: "object",
+      properties: { entry_id: idProp("기록 ID"), status: { type: "string", enum: ["none", "requested", "changes_requested", "approved"] }, note: { type: "string" } },
+      required: ["entry_id", "status"],
+      additionalProperties: false,
+    },
+    handler: async (env, ctx, a) => {
+      const e = await E.setReviewStatus(env, ctx, String(a.entry_id), a.status, a.note);
+      return { text: `검토 상태: ${e.title} → ${e.review_status}`, data: e };
+    },
+  },
+  {
+    name: "team_feed",
+    title: "팀 활동 피드",
+    description: "같은 카테고리 팀원들의 최근 활동(기록·코멘트·단계 변경)을 본다. 팀 상황 파악·검토할 것 찾기.",
+    inputSchema: { type: "object", properties: { category_id: idProp("카테고리 ID (생략 시 소속 전체)"), limit: { type: "integer", minimum: 1, maximum: 200 } }, additionalProperties: false },
+    handler: async (env, ctx, a) => {
+      const rows = await F.feed(env, ctx, { category_id: s(a.category_id), limit: a.limit ?? 40 });
+      return { text: rows.length ? rows.map((r) => `- ${r.at.slice(0, 16).replace("T", " ")} ${r.actor_name ?? "?"} · ${r.action} · ${r.project_title ?? ""} · ${r.summary}${r.source === "mcp" ? " (AI)" : ""}`).join("\n") : "활동 없음", data: rows };
+    },
+  },
+  {
+    name: "team_overview",
+    title: "팀(카테고리) 현황",
+    description: "카테고리의 구성원·프로젝트·검토 대기 목록·최근 활동을 한 번에 본다.",
+    inputSchema: { type: "object", properties: { category_id: idProp("카테고리 ID") }, required: ["category_id"], additionalProperties: false },
+    handler: async (env, ctx, a) => {
+      const d = await F.categoryDetail(env, ctx, String(a.category_id));
+      const L = [`# ${(d.category as { name: string }).name}`, `구성원: ${(d.members as { name: string; role: string }[]).map((m) => `${m.name}(${m.role})`).join(", ")}`, "", "## 프로젝트"];
+      for (const p of d.projects) L.push(`- ${p.title} (${p.id}) · ${p.owner_name} · ${STAGE_LABELS[p.stage]} · ${p.status} · 마지막 ${p.last_entry_date ?? "-"}`);
+      if (d.review_queue.length) {
+        L.push("", "## 검토 대기");
+        for (const e of d.review_queue) L.push(`- ${e.date} ${e.title} (${e.id}) · ${e.project_title} · ${e.author_name}`);
+      }
+      return { text: L.join("\n"), data: d };
+    },
+  },
+  {
+    name: "search",
+    title: "검색",
+    description: "프로젝트·기록을 검색한다.",
+    inputSchema: { type: "object", properties: { q: { type: "string" }, category_id: idProp("카테고리 ID") }, required: ["q"], additionalProperties: false },
+    handler: async (env, ctx, a) => {
+      const r = await F.search(env, ctx, a.q, s(a.category_id));
+      const L = [`프로젝트 ${r.projects.length}건`, ...r.projects.map((p) => `- ${p.title} (${p.id})`), `기록 ${r.entries.length}건`, ...r.entries.map((e) => `- ${e.date} ${e.title} (${e.id}) · ${e.project_title}`)];
+      return { text: L.join("\n"), data: r };
+    },
+  },
+  {
+    name: "get_report",
+    title: "진행 보고서 (마크다운)",
+    description: "프로젝트의 진행 보고서를 마크다운으로 생성한다 (단계별 정리 + 날짜별 기록 + 코멘트). 주간 보고·미팅 준비용.",
+    inputSchema: {
+      type: "object",
+      properties: { project_id: idProp("프로젝트 ID"), from: dateProp("시작일"), to: dateProp("종료일"), format: { type: "string", enum: ["markdown", "json"] } },
+      required: ["project_id"],
+      additionalProperties: false,
+    },
+    handler: async (env, ctx, a) => {
+      const r = await R.projectReport(env, ctx, String(a.project_id), a.format === "json" ? "json" : "md", { from: s(a.from), to: s(a.to) });
+      if (r.type === "md") return { text: r.text };
+      if (r.type === "json") return { text: j(r.data), data: r.data };
+      return { text: r.html };
+    },
+  },
+];
+
+const PROMPTS = [
+  {
+    name: "log_today",
+    title: "오늘 연구 기록 남기기",
+    description: "지금까지의 대화/작업 내용을 바탕으로 오늘의 연구 진행 기록을 작성해 log_progress 로 저장한다.",
+    arguments: [{ name: "project_id", description: "프로젝트 ID (생략 시 whoami 로 고른다)", required: false }],
+    build: (a: Record<string, string>) =>
+      `오늘 이 세션에서 수행한 연구 작업을 연구노트에 기록해 주세요.\n` +
+      `1) ${a.project_id ? `project_id=${a.project_id} 의 get_project` : "whoami → 적절한 프로젝트 선택 후 get_project"} 로 현재 상태를 확인.\n` +
+      `2) 아래 형식으로 마크다운 본문을 작성해 log_progress 호출:\n## 한 일\n## 결과 (수치·표·그림 설명)\n## 다음 할 일\n## 메모 (막힌 점·질문)\n` +
+      `3) 단계(stage)는 작업 성격에 맞게 고르고, 누적 결론이 바뀌었으면 update_stage 로 해당 단계 정리를 갱신.\n4) '다음 할 일'은 add_task 로도 등록.`,
+  },
+  {
+    name: "weekly_review",
+    title: "주간 정리·보고",
+    description: "최근 7일 기록을 모아 주간 보고 초안을 만든다.",
+    arguments: [{ name: "project_id", description: "프로젝트 ID", required: true }],
+    build: (a: Record<string, string>) =>
+      `project_id=${a.project_id} 의 최근 7일 기록(list_entries since=7일 전)과 get_project 를 읽고, ` +
+      `(1) 이번 주 진행 요약 (2) 핵심 결과 (3) 막힌 점 (4) 다음 주 계획 을 담은 주간 보고 초안을 작성하세요. ` +
+      `초안이 확정되면 stage=review 또는 해당 단계로 log_progress 에 '주간 정리' 제목으로 저장하고 request_review=true 로 검토를 요청하세요.`,
+  },
+  {
+    name: "research_note_guide",
+    title: "연구노트 사용 지침",
+    description: "AI 도구가 연구노트를 어떻게 활용해야 하는지에 대한 전체 지침 (스킬).",
+    arguments: [],
+    build: () => SKILL_MD,
+  },
+];
+
+function rpcError(id: unknown, code: number, message: string, data?: unknown) {
+  return { jsonrpc: "2.0", id: id ?? null, error: { code, message, ...(data !== undefined ? { data } : {}) } };
+}
+
+async function handleOne(req: JsonRpcRequest, env: Env, ctx: AuthContext): Promise<unknown | null> {
+  const { id, method, params = {} } = req;
+  const isNotification = id === undefined;
+  try {
+    switch (method) {
+      case "initialize": {
+        const requested = String(params.protocolVersion ?? "");
+        const protocolVersion = SUPPORTED_VERSIONS.includes(requested) ? requested : SUPPORTED_VERSIONS[0];
+        return {
+          jsonrpc: "2.0",
+          id,
+          result: {
+            protocolVersion,
+            capabilities: { tools: { listChanged: false }, prompts: { listChanged: false }, resources: { listChanged: false, subscribe: false }, logging: {} },
+            serverInfo: { name: SERVER_NAME, title: env.APP_NAME, version: SERVER_VERSION },
+            instructions: SKILL_SHORT.replace("{{USER}}", ctx.user.name).replace("{{TODAY}}", todayIn(env.APP_TZ)),
+          },
+        };
+      }
+      case "notifications/initialized":
+      case "notifications/cancelled":
+      case "notifications/progress":
+      case "notifications/roots/list_changed":
+        return null;
+      case "ping":
+        return { jsonrpc: "2.0", id, result: {} };
+      case "logging/setLevel":
+        return { jsonrpc: "2.0", id, result: {} };
+      case "tools/list":
+        return { jsonrpc: "2.0", id, result: { tools: TOOLS.map(({ name, title, description, inputSchema }) => ({ name, title, description, inputSchema })) } };
+      case "tools/call": {
+        const name = String(params.name ?? "");
+        const tool = TOOLS.find((t) => t.name === name);
+        if (!tool) return rpcError(id, -32602, `알 수 없는 도구: ${name}`);
+        const args = (params.arguments && typeof params.arguments === "object" ? params.arguments : {}) as Record<string, unknown>;
+        try {
+          const r = await tool.handler(env, ctx, args);
+          const result: Record<string, unknown> = { content: [{ type: "text", text: r.text }] };
+          if (r.data !== undefined && r.data !== null && typeof r.data === "object" && !Array.isArray(r.data)) result.structuredContent = r.data;
+          return { jsonrpc: "2.0", id, result };
+        } catch (err) {
+          const msg = err instanceof HttpError ? `${err.message} (${err.code})` : err instanceof Error ? err.message : String(err);
+          return { jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `오류: ${msg}` }], isError: true } };
+        }
+      }
+      case "prompts/list":
+        return { jsonrpc: "2.0", id, result: { prompts: PROMPTS.map(({ name, title, description, arguments: args }) => ({ name, title, description, arguments: args })) } };
+      case "prompts/get": {
+        const name = String(params.name ?? "");
+        const p = PROMPTS.find((x) => x.name === name);
+        if (!p) return rpcError(id, -32602, `알 수 없는 프롬프트: ${name}`);
+        const args = (params.arguments && typeof params.arguments === "object" ? params.arguments : {}) as Record<string, string>;
+        return { jsonrpc: "2.0", id, result: { description: p.description, messages: [{ role: "user", content: { type: "text", text: p.build(args) } }] } };
+      }
+      case "resources/list":
+        return {
+          jsonrpc: "2.0",
+          id,
+          result: {
+            resources: [
+              { uri: "research-note://guide", name: "연구노트 사용 지침 (SKILL.md)", mimeType: "text/markdown", description: "AI 도구용 연구노트 활용 지침" },
+              { uri: "research-note://me", name: "내 정보·프로젝트", mimeType: "application/json" },
+            ],
+          },
+        };
+      case "resources/templates/list":
+        return { jsonrpc: "2.0", id, result: { resourceTemplates: [{ uriTemplate: "research-note://project/{project_id}", name: "프로젝트 상세(마크다운)", mimeType: "text/markdown" }] } };
+      case "resources/read": {
+        const uri = String(params.uri ?? "");
+        if (uri === "research-note://guide") return { jsonrpc: "2.0", id, result: { contents: [{ uri, mimeType: "text/markdown", text: SKILL_MD }] } };
+        if (uri === "research-note://me") return { jsonrpc: "2.0", id, result: { contents: [{ uri, mimeType: "application/json", text: j(await F.me(env, ctx)) }] } };
+        const m = uri.match(/^research-note:\/\/project\/([^/]+)$/);
+        if (m) {
+          const p = await P.getProjectDetail(env, ctx, m[1]);
+          return { jsonrpc: "2.0", id, result: { contents: [{ uri, mimeType: "text/markdown", text: projectSummaryMd(p) }] } };
+        }
+        return rpcError(id, -32002, `리소스를 찾을 수 없습니다: ${uri}`);
+      }
+      case "completion/complete":
+        return { jsonrpc: "2.0", id, result: { completion: { values: [], hasMore: false } } };
+      default:
+        if (isNotification) return null;
+        return rpcError(id, -32601, `지원하지 않는 메서드: ${method}`);
+    }
+  } catch (err) {
+    if (isNotification) return null;
+    const msg = err instanceof HttpError ? err.message : err instanceof Error ? err.message : String(err);
+    return rpcError(id, err instanceof HttpError && err.status === 403 ? -32003 : -32603, msg);
+  }
+}
+
+const MCP_HEADERS = { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...CORS_HEADERS };
+
+export async function handleMcp(request: Request, env: Env): Promise<Response> {
+  const method = request.method.toUpperCase();
+  if (method === "GET") {
+    // 브라우저로 열었을 때 안내
+    const accept = request.headers.get("accept") || "";
+    if (accept.includes("text/event-stream")) return new Response(null, { status: 405, headers: { Allow: "POST, DELETE", ...CORS_HEADERS } });
+    return new Response(
+      JSON.stringify({ name: SERVER_NAME, version: SERVER_VERSION, transport: "streamable-http", hint: "MCP 클라이언트에서 이 URL 을 POST 로 사용하고 Authorization: Bearer <토큰> 헤더를 붙이세요. 지침: /SKILL.md" }, null, 2),
+      { status: 200, headers: MCP_HEADERS }
+    );
+  }
+  if (method === "DELETE") return new Response(null, { status: 200, headers: CORS_HEADERS });
+  if (method !== "POST") return new Response(null, { status: 405, headers: { Allow: "POST, GET, DELETE", ...CORS_HEADERS } });
+
+  let ctx: AuthContext;
+  try {
+    ctx = await authenticate(request, env, "mcp");
+  } catch (err) {
+    const msg = err instanceof HttpError ? err.message : "unauthorized";
+    return new Response(JSON.stringify(rpcError(null, -32001, msg)), { status: 401, headers: { ...MCP_HEADERS, "WWW-Authenticate": `Bearer realm="research-note", error="invalid_token"` } });
+  }
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response(JSON.stringify(rpcError(null, -32700, "JSON 파싱 실패")), { status: 400, headers: MCP_HEADERS });
+  }
+  const batch = Array.isArray(body);
+  const reqs = (batch ? body : [body]) as JsonRpcRequest[];
+  if (!reqs.length || reqs.some((r) => !r || typeof r !== "object" || typeof r.method !== "string")) {
+    return new Response(JSON.stringify(rpcError(null, -32600, "잘못된 JSON-RPC 요청")), { status: 400, headers: MCP_HEADERS });
+  }
+  const results = (await Promise.all(reqs.map((r) => handleOne(r, env, ctx)))).filter((x) => x !== null);
+  if (!results.length) return new Response(null, { status: 202, headers: CORS_HEADERS });
+  return new Response(JSON.stringify(batch ? results : results[0]), { status: 200, headers: MCP_HEADERS });
+}

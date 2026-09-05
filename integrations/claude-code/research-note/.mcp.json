@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "research-note": {
+      "type": "http",
+      "url": "${RESEARCH_NOTE_URL:-https://research-note.example.workers.dev}/mcp",
+      "headers": {
+        "Authorization": "Bearer ${RESEARCH_NOTE_TOKEN}"
+      }
+    }
+  }
+}

@@ -1,0 +1,163 @@
+import { state, get, post, patch, put, del, h, mount, pill, avatar, stages, stageLabel, fmtRel, fmtDT, daysSince, input, textarea, field, select, modal, confirmDialog, toast, errToast, copyText, ACTION_LABEL } from "../core.js";
+import { feedList } from "./home.js";
+
+export async function render(container, sub, query) {
+  const tab = sub || "overview";
+  const tabs = h("div.tabs");
+  for (const [k, l] of [["overview", "개요"], ["categories", "카테고리"], ["users", "연구원"], ["tokens", "토큰"], ["activity", "활동 로그"]]) tabs.append(h("button", { class: tab === k ? "active" : "", onclick: () => (location.hash = `#/admin/${k}`) }, l));
+  const body = h("div", h("div.loading", h("span.spinner")));
+  mount(container, h("header.hero", { style: { padding: "18px 0 6px", border: 0, margin: 0 } }, h("div.eyebrow", "Administration"), h("h1", "관리자 대시보드"), h("p.sub", "카테고리(팀)·연구원·토큰을 관리하고 전체 진행 현황을 봅니다")), tabs, body);
+  try {
+    if (tab === "overview") await overview(body);
+    else if (tab === "categories") await categories(body);
+    else if (tab === "users") await users(body, query);
+    else if (tab === "tokens") await tokens(body, query);
+    else await activity(body);
+  } catch (e) { mount(body, h("div.empty", e.message)); }
+}
+
+// ---------- 개요 ----------
+async function overview(body) {
+  const o = await get("/api/admin/overview");
+  const c = o.counts;
+  const stats = [[c.users, "연구원"], [c.categories, "카테고리"], [c.active_projects, "진행 중 프로젝트"], [c.done_projects, "완료 프로젝트"], [c.entries, "전체 기록"], [c.entries_7d, "7일 기록"], [c.entries_30d, "30일 기록"], [c.entries_mcp, "AI(MCP) 기록"], [c.review_requested, "검토 대기"], [c.active_tokens, "활성 토큰"]];
+  const maxStage = Math.max(1, ...Object.values(o.by_stage));
+  const stageBars = h("div.card", h("h3", "진행 중 프로젝트 · 단계 분포"), h("div.stack", { style: { marginTop: "10px", gap: "6px" } }, stages().map((s) => h("div.row", h("span.small", { style: { width: "80px" } }, s.label), h("div", { style: { flex: 1, height: "10px", background: "var(--wash)", borderRadius: "5px", overflow: "hidden" } }, h("i", { style: { display: "block", height: "100%", width: `${(o.by_stage[s.id] / maxStage) * 100}%`, background: "var(--mint)" } })), h("span.small.muted", { style: { width: "24px", textAlign: "right" } }, String(o.by_stage[s.id]))))));
+  const days = o.daily_activity;
+  const maxDay = Math.max(1, ...days.map((d) => d.n));
+  const byDay = new Map(days.map((d) => [d.day, d.n]));
+  const bars = h("div.bars");
+  for (let i = 41; i >= 0; i--) { const d = new Date(Date.now() - i * 864e5).toISOString().slice(0, 10); const n = byDay.get(d) || 0; bars.append(h("i", { style: { height: `${Math.max(4, (n / maxDay) * 100)}%`, opacity: n ? 0.85 : 0.25 }, title: `${d}: ${n}` })); }
+  const activityCard = h("div.card", h("h3", "최근 6주 활동 (기록·코멘트·단계·프로젝트)"), h("div", { style: { marginTop: "10px" } }, bars), h("div.row.between.tiny.muted", h("span", "6주 전"), h("span", "오늘")));
+
+  const catTable = h("div.table-wrap", h("table.table", h("thead", h("tr", h("th", "카테고리"), h("th", "구성원"), h("th", "진행 중"), h("th", "7일 기록"), h("th", "30일 기록"), h("th", "마지막 기록"))),
+    h("tbody", o.by_category.map((r) => h("tr", h("td", h("a", { href: `#/team/${r.id}`, style: { fontWeight: 700 } }, r.name)), h("td", String(r.members)), h("td", String(r.active_projects)), h("td", String(r.entries_7d)), h("td", String(r.entries_30d)), h("td", { class: daysSince(r.last_entry_at) > 14 ? "stale" : "" }, r.last_entry_at ? fmtRel(r.last_entry_at) : "없음"))))));
+  const userTable = h("div.table-wrap", h("table.table", h("thead", h("tr", h("th", "연구원"), h("th", "소속"), h("th", "진행 중"), h("th", "7일"), h("th", "30일"), h("th", "마지막 기록"), h("th", "최근 접속"))),
+    h("tbody", o.per_user.map((u) => h("tr", { class: u.role === "admin" ? "dim" : "" }, h("td", h("span.row", { style: { gap: "5px" } }, avatar(u.name), u.name, u.role === "admin" ? pill("관리자", "gold sm") : null)), h("td.small", u.category_names || "-"), h("td", String(u.active_projects)), h("td", String(u.entries_7d)), h("td", String(u.entries_30d)), h("td", { class: u.role !== "admin" && daysSince(u.last_entry_at) > 14 ? "stale" : "" }, u.last_entry_at ? fmtRel(u.last_entry_at) : "없음"), h("td.small.muted", u.last_seen_at ? fmtRel(u.last_seen_at) : "-"))))));
+  const rq = o.review_queue.length ? h("div.stack", o.review_queue.map((e) => h("a.card.hover.pad-s", { href: `#/project/${e.project_id}?entry=${e.id}` }, h("div.row", pill(stageLabel(e.stage), "sm"), h("b", e.title), h("span.spacer"), h("span.tiny.muted", fmtRel(e.updated_at))), h("div.small.muted", `${e.category_name} · ${e.project_title} · ${e.author_name}`)))) : h("div.small.muted", "검토 대기 없음");
+  const dl = o.deadlines.length ? h("div.stack", o.deadlines.map((p) => h("a.card.hover.pad-s", { href: `#/project/${p.id}` }, h("div.row", h("b", p.deadline), h("span", p.title), h("span.spacer"), pill(stageLabel(p.stage), "sm")), h("div.small.muted", `${p.category_name} · ${p.owner_name}${p.target_venue ? " · " + p.target_venue : ""}`)))) : h("div.small.muted", "다가오는 마감 없음");
+
+  mount(body,
+    h("div.grid.c4", stats.map(([n, l]) => h("div.card.stat", h("div.n", String(n)), h("div.l", l)))),
+    h("div.grid.c2", { style: { marginTop: "14px" } }, stageBars, activityCard),
+    h("div.section", h("div.section-h", h("h2", "카테고리별 현황")), catTable),
+    h("div.section", h("div.section-h", h("h2", "연구원별 현황"), h("p.sub", "14일 이상 기록이 없으면 붉게 표시")), userTable),
+    h("div.grid.c2", { style: { marginTop: "22px" } }, h("div", h("div.section-h", h("h2", "검토 대기")), rq), h("div", h("div.section-h", h("h2", "다가오는 마감")), dl)),
+  );
+}
+
+// ---------- 카테고리 ----------
+async function categories(body) {
+  const cats = await get("/api/admin/categories?all=1");
+  const table = h("div.table-wrap", h("table.table", h("thead", h("tr", h("th", "이름"), h("th", "ID"), h("th", "설명"), h("th", "리드"), h("th", "구성원"), h("th", "프로젝트"), h("th", ""))),
+    h("tbody", cats.map((c) => h("tr", { class: c.archived_at ? "dim" : "" },
+      h("td", h("a", { href: `#/team/${c.id}`, style: { fontWeight: 700 } }, c.name), c.archived_at ? [" ", pill("보관", "mute sm")] : null),
+      h("td", h("code", c.id)), h("td.small", c.description || ""), h("td.small", c.lead_names || "-"), h("td", String(c.member_count)), h("td", String(c.project_count)),
+      h("td.right", h("button.btn.xs", { onclick: () => categoryDialog(c, body) }, "수정")))))));
+  mount(body, h("div.row.between", { style: { marginBottom: "12px" } }, h("p.small.muted", "카테고리 = 연구 그룹/팀. 같은 카테고리 구성원끼리 프로젝트를 공유·검토합니다."), h("button.btn.primary", { onclick: () => categoryDialog(null, body) }, "+ 카테고리")), cats.length ? table : h("div.empty", "카테고리를 만들어 연구원을 배정하세요"));
+}
+function categoryDialog(c, body) {
+  const name = input({ value: c?.name || "", placeholder: "예: LLM 응용, 시계열 예측, 인과추론" });
+  const id = input({ value: c?.id || "", placeholder: "비우면 이름에서 자동 생성 (영문·숫자·하이픈)", disabled: !!c });
+  const desc = textarea({ value: c?.description || "", rows: 3, placeholder: "연구 주제·목표 (팀 페이지와 보고서에 표시)" });
+  const archived = h("input", { type: "checkbox", checked: !!c?.archived_at });
+  modal({ title: c ? "카테고리 수정" : "새 카테고리", body: h("div.stack", field("이름", name), field("ID", id), field("설명", desc), c ? h("label.check", archived, "보관 (목록에서 숨김, 구성원 접근 차단)") : null),
+    actions: [{ label: "취소" }, { label: c ? "저장" : "만들기", cls: "primary", onClick: async () => {
+      if (!name.value.trim()) { toast("이름을 입력하세요", true); return false; }
+      if (c) await patch(`/api/admin/categories/${c.id}`, { name: name.value.trim(), description: desc.value, archived: archived.checked });
+      else await post("/api/admin/categories", { name: name.value.trim(), description: desc.value, id: id.value.trim() || undefined });
+      toast("저장했습니다"); state.me = null; window.dispatchEvent(new Event("rn:refresh"));
+    } }] });
+}
+
+// ---------- 연구원 ----------
+async function users(body, query) {
+  const [list, cats] = await Promise.all([get("/api/admin/users"), get("/api/admin/categories")]);
+  const q = input({ placeholder: "이름·이메일·ID 검색", style: { width: "240px" } });
+  const tbody = h("tbody");
+  const draw = () => {
+    const term = q.value.trim().toLowerCase();
+    mount(tbody, list.filter((u) => !term || [u.name, u.email, u.id].some((x) => (x || "").toLowerCase().includes(term))).map((u) => h("tr", { class: u.disabled_at ? "dim" : "" },
+      h("td", h("span.row", { style: { gap: "6px" } }, avatar(u.name), h("span", h("b", u.name), u.role === "admin" ? [" ", pill("관리자", "gold sm")] : null, u.disabled_at ? [" ", pill("비활성", "mute sm")] : null, h("div.tiny.muted", u.id + (u.email ? " · " + u.email : ""))))),
+      h("td", h("div.chip-list", (u.memberships || []).map((m) => h("span.chip", m.category_name, m.role === "lead" ? pill("리드", "gold sm") : null)), !u.memberships?.length ? h("span.tiny.muted", "소속 없음") : null)),
+      h("td", h("span", `${u.active_tokens}/${u.token_count}`), " ", h("button.btn.xs", { onclick: () => issueTokenDialog(u) }, "발급")),
+      h("td", String(u.project_count)), h("td", String(u.entry_count)),
+      h("td", { class: u.role !== "admin" && !u.disabled_at && daysSince(u.last_entry_at) > 14 ? "stale" : "" }, u.last_entry_at ? fmtRel(u.last_entry_at) : "없음"),
+      h("td.right", h("button.btn.xs", { onclick: () => userDialog(u, cats, body) }, "수정")),
+    )));
+  };
+  q.addEventListener("input", draw);
+  draw();
+  mount(body,
+    h("div.row.between", { style: { marginBottom: "12px" } }, h("div.row", q, h("span.small.muted", `${list.length}명`)), h("button.btn.primary", { onclick: () => userDialog(null, cats, body) }, "+ 연구원 등록")),
+    h("div.table-wrap", h("table.table", h("thead", h("tr", h("th", "연구원"), h("th", "소속 (카테고리)"), h("th", "토큰 활성/전체"), h("th", "프로젝트"), h("th", "기록"), h("th", "마지막 기록"), h("th", ""))), tbody)),
+    h("p.small.muted", { style: { marginTop: "10px" } }, "토큰은 발급 시 한 번만 표시됩니다(서버에는 해시만 저장). 잃어버리면 회수 후 재발급하세요."),
+  );
+}
+function membershipEditor(cats, initial = []) {
+  const stateMap = new Map(initial.map((m) => [m.category_id, m.role]));
+  const wrap = h("div.stack", { style: { gap: "6px" } });
+  const rows = [];
+  if (!cats.length) wrap.append(h("span.small.muted", "카테고리가 없습니다. 먼저 카테고리를 만드세요."));
+  for (const c of cats) {
+    const cb = h("input", { type: "checkbox", checked: stateMap.has(c.id) });
+    const lead = h("input", { type: "checkbox", checked: stateMap.get(c.id) === "lead", disabled: !cb.checked });
+    cb.addEventListener("change", () => { lead.disabled = !cb.checked; if (!cb.checked) lead.checked = false; });
+    rows.push({ id: c.id, cb, lead });
+    wrap.append(h("div.row", h("label.check", { style: { minWidth: "220px" } }, cb, c.name), h("label.check.small.muted", lead, "리드(검토 승인 권한)")));
+  }
+  return { el: wrap, value: () => rows.filter((r) => r.cb.checked).map((r) => ({ category_id: r.id, role: r.lead.checked ? "lead" : "member" })) };
+}
+function userDialog(u, cats, body) {
+  const name = input({ value: u?.name || "", placeholder: "이름" });
+  const id = input({ value: u?.id || "", placeholder: "비우면 이름에서 자동 생성", disabled: !!u });
+  const email = input({ value: u?.email || "", placeholder: "이메일 (선택)" });
+  const role = select([{ value: "member", label: "연구원" }, { value: "admin", label: "관리자 (전체 권한)" }], { value: u?.role || "member" });
+  const note = input({ value: u?.note || "", placeholder: "메모 (학번·과정 등)" });
+  const mem = membershipEditor(cats, u?.memberships || []);
+  const issue = h("input", { type: "checkbox", checked: !u });
+  const disabled = h("input", { type: "checkbox", checked: !!u?.disabled_at });
+  modal({
+    title: u ? `연구원 수정 — ${u.name}` : "연구원 등록", wide: true,
+    body: h("div.stack", h("div.form-grid", field("이름", name), field("ID", id), field("이메일", email), field("권한", role)), field("메모", note), h("div.field", h("span", "소속 카테고리"), mem.el), u ? h("label.check", disabled, "비활성화 (로그인·MCP 차단)") : h("label.check", issue, "등록과 동시에 토큰 발급")),
+    actions: [{ label: "취소" }, { label: u ? "저장" : "등록", cls: "primary", onClick: async () => {
+      if (!name.value.trim()) { toast("이름을 입력하세요", true); return false; }
+      const payload = { name: name.value.trim(), email: email.value.trim(), role: role.value, note: note.value, categories: mem.value() };
+      if (u) { await patch(`/api/admin/users/${u.id}`, { ...payload, disabled: disabled.checked }); toast("저장했습니다"); render(body.parentElement, "users", {}); }
+      else { const r = await post("/api/admin/users", { ...payload, id: id.value.trim() || undefined, issue_token: issue.checked }); toast("등록했습니다"); if (r.token) tokenReveal(r.user, r.token); render(body.parentElement, "users", {}); }
+    } }],
+  });
+}
+export function issueTokenDialog(u) {
+  const label = input({ placeholder: "용도 (예: 노트북, Claude Code)" });
+  modal({ title: `토큰 발급 — ${u.name || u.user_name}`, body: h("div.stack", field("라벨", label), h("p.help", "새 토큰을 발급해도 기존 토큰은 유지됩니다. 분실 시에는 [토큰] 탭에서 기존 것을 회수하세요.")),
+    actions: [{ label: "취소" }, { label: "발급", cls: "primary", onClick: async () => { const r = await post("/api/admin/tokens", { user_id: u.id || u.user_id, label: label.value }); tokenReveal(u, r.token); } }] });
+}
+function tokenReveal(u, token) {
+  const origin = location.origin;
+  const cmd = `claude mcp add --transport http research-note ${origin}/mcp --header "Authorization: Bearer ${token}"`;
+  modal({ title: `토큰 — ${u.name || u.user_name}`, wide: true,
+    body: h("div.stack",
+      h("p", "아래 토큰은 지금 한 번만 표시됩니다. 연구원에게 안전한 채널로 전달하세요."),
+      h("div.tokenbox", token), h("div.row", h("button.btn.sm", { onclick: () => copyText(token) }, "토큰 복사"), h("button.btn.sm", { onclick: () => copyText(`${origin}\n토큰: ${token}\n\nClaude Code 연동:\n${cmd}`) }, "안내문 복사")),
+      h("p.small.muted", "연구원 안내: 1) 위 주소로 접속해 토큰으로 로그인 2) AI 도구 연동은 [설정] 페이지 참고"),
+      h("pre", { style: { fontSize: "12px" } }, cmd),
+    ), actions: [{ label: "닫기" }] });
+}
+
+// ---------- 토큰 ----------
+async function tokens(body, query) {
+  const [list, users] = await Promise.all([get("/api/admin/tokens"), get("/api/admin/users")]);
+  const sel = select([{ value: "", label: "연구원 선택…" }, ...users.filter((u) => !u.disabled_at).map((u) => ({ value: u.id, label: u.name }))], { style: { width: "200px" } });
+  const btn = h("button.btn.primary", { onclick: () => { const u = users.find((x) => x.id === sel.value); if (!u) { toast("연구원을 선택하세요", true); return; } issueTokenDialog(u); } }, "토큰 발급");
+  const table = h("div.table-wrap", h("table.table", h("thead", h("tr", h("th", "연구원"), h("th", "토큰"), h("th", "라벨"), h("th", "발급"), h("th", "마지막 사용"), h("th", "상태"), h("th", ""))),
+    h("tbody", list.map((t) => h("tr", { class: t.revoked_at ? "dim" : "" }, h("td", t.user_name), h("td", h("code", t.hint)), h("td.small", t.label || ""), h("td.small.muted", fmtDT(t.created_at)), h("td.small.muted", t.last_used_at ? fmtRel(t.last_used_at) : "미사용"), h("td", t.revoked_at ? pill("회수됨", "mute sm") : pill("활성", "ok sm")),
+      h("td.right", t.revoked_at ? null : h("button.btn.xs.danger", { onclick: async () => { if (await confirmDialog(`${t.user_name} 의 토큰 ${t.hint} 을 회수할까요? 즉시 로그인·MCP 접근이 차단됩니다.`, { danger: true, okLabel: "회수" })) { await post(`/api/admin/tokens/${t.id}/revoke`); toast("회수했습니다"); render(body.parentElement, "tokens", {}); } } }, "회수")))))));
+  mount(body, h("div.row", { style: { marginBottom: "12px" } }, sel, btn, h("span.spacer"), h("span.small.muted", `활성 ${list.filter((t) => !t.revoked_at).length} / 전체 ${list.length}`)), list.length ? table : h("div.empty", "발급된 토큰이 없습니다"));
+}
+
+// ---------- 활동 로그 ----------
+async function activity(body) {
+  const rows = await get("/api/admin/activity?limit=150");
+  mount(body, h("div.card", feedList(rows)));
+}
