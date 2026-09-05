@@ -97,23 +97,68 @@ async function renderTimeline(body, container) {
   if (current.reviewFilter) qs.set("review_status", current.reviewFilter);
   const entries = await get(`/api/projects/${p.id}/entries?${qs}`);
 
+  // 보기 방식: 날짜별(평면) / 단계별(트랙 순서로 묶고 접었다 펼침). 브라우저에 기억
+  let view = current.timelineView;
+  if (!view) { try { view = localStorage.getItem("rn.timeline.view") || "date"; } catch { view = "date"; } current.timelineView = view; }
+  const setView = (v) => { current.timelineView = v; try { localStorage.setItem("rn.timeline.view", v); } catch {} renderTimeline(body, container); };
+  const viewSeg = h("div.seg", h("button", { class: view === "date" ? "active" : "", onclick: () => setView("date") }, "날짜별"), h("button", { class: view === "stage" ? "active" : "", onclick: () => setView("stage") }, "단계별"));
+
   const stageSel = select([{ value: "", label: "모든 단계" }, ...stages(p.track).map((s) => ({ value: s.id, label: s.label }))], { value: current.stageFilter, onchange: (e) => { current.stageFilter = e.target.value; renderTimeline(body, container); } });
   const reviewSel = select([{ value: "", label: "모든 검토 상태" }, { value: "requested", label: "검토 요청" }, { value: "changes_requested", label: "수정 요청" }, { value: "approved", label: "승인" }], { value: current.reviewFilter, onchange: (e) => { current.reviewFilter = e.target.value; renderTimeline(body, container); } });
-  const toolbar = h("div.row", { style: { marginBottom: "14px" } }, h("div", { style: { width: "160px" } }, stageSel), h("div", { style: { width: "170px" } }, reviewSel), h("span.spacer"), h("span.small.muted", `${entries.length}건`));
+  const expandAll = view === "stage" ? h("button.btn.ghost.xs", { onclick: () => { current.collapsedStages = new Set(); renderTimeline(body, container); } }, "모두 펼치기") : null;
+  const collapseAll = view === "stage" ? h("button.btn.ghost.xs", { onclick: () => { current.collapsedStages = new Set(stages(p.track).map((s) => s.id)); renderTimeline(body, container); } }, "모두 접기") : null;
+  const toolbar = h("div.row", { style: { marginBottom: "14px" } }, viewSeg, view === "date" ? h("div", { style: { width: "160px" } }, stageSel) : null, h("div", { style: { width: "170px" } }, reviewSel), expandAll, collapseAll, h("span.spacer"), h("span.small.muted", `${entries.length}건`));
 
   if (!entries.length) { mount(body, toolbar, h("div.empty", p.can_edit ? "아직 기록이 없습니다. [+ 기록 추가]로 오늘 한 일을 남겨보세요." : "아직 기록이 없습니다")); return; }
 
-  const tl = h("div.timeline");
-  let lastDate = null, dayEl = null;
-  for (const e of entries) {
-    if (e.date !== lastDate) {
-      lastDate = e.date;
-      dayEl = h("div.day", h("div.d", e.date, h("small", weekday(e.date))), h("div.stack"));
-      tl.append(dayEl);
+  // 날짜별 묶음 → .day 요소들
+  const dayGroups = (rows) => {
+    const out = [];
+    let lastDate = null, dayEl = null;
+    for (const e of rows) {
+      if (e.date !== lastDate) {
+        lastDate = e.date;
+        dayEl = h("div.day", h("div.d", e.date, h("small", weekday(e.date))), h("div.stack"));
+        out.push(dayEl);
+      }
+      dayEl.lastChild.append(entryCard(e, container));
     }
-    dayEl.lastChild.append(entryCard(e, container));
+    return out;
+  };
+
+  let tl;
+  if (view === "stage") {
+    // 처음엔 현재 단계만 펼치고 나머지는 접는다 (세션 동안 기억)
+    if (!current.collapsedStages) current.collapsedStages = new Set(stages(p.track).map((s) => s.id).filter((id) => id !== p.stage));
+    const byStage = new Map(stages(p.track).map((s) => [s.id, []]));
+    for (const e of entries) (byStage.get(e.stage) || byStage.set(e.stage, []).get(e.stage)).push(e);
+    tl = h("div.stack", { style: { gap: "10px" } });
+    stages(p.track).forEach((s, i) => {
+      const rows = byStage.get(s.id) || [];
+      const st = p.stages.find((x) => x.stage === s.id);
+      const isCurrent = p.stage === s.id && p.status !== "done";
+      const collapsed = current.collapsedStages.has(s.id);
+      const bodyEl = h("div.timeline", { style: { display: collapsed ? "none" : "", padding: "12px 4px 4px" } }, rows.length ? dayGroups(rows) : h("div.small.muted", { style: { padding: "4px 0 8px" } }, "이 단계의 기록이 없습니다"));
+      const caret = h("span.tiny.muted", { style: { fontFamily: "var(--mono)" } }, collapsed ? "▼" : "▲");
+      const head = h("button", { type: "button", style: { all: "unset", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", width: "100%", padding: "10px 12px", boxSizing: "border-box" },
+        onclick: () => { const nowCollapsed = bodyEl.style.display !== "none"; bodyEl.style.display = nowCollapsed ? "none" : ""; caret.textContent = nowCollapsed ? "▼" : "▲"; if (nowCollapsed) current.collapsedStages.add(s.id); else current.collapsedStages.delete(s.id); } },
+        caret, h("b", { style: { color: "var(--navy)" } }, `${i + 1}. ${s.label}`),
+        st ? pill(STAGE_STATUS_LABEL[st.status], st.status === "done" ? "ok sm" : st.status === "doing" ? "warn sm" : "mute sm") : null,
+        isCurrent ? pill("현재", "navy sm") : null,
+        h("span.small.muted", `기록 ${rows.length}건`),
+        rows.some((e) => e.review_status === "requested") ? pill(`검토 대기 ${rows.filter((e) => e.review_status === "requested").length}`, "bad sm") : null,
+        h("span.spacer"), h("span.tiny.muted", s.hint));
+      tl.append(h("div.card", { style: { padding: 0, borderColor: isCurrent ? "var(--navy)" : "var(--rule)" } }, head, bodyEl));
+    });
+  } else {
+    tl = h("div.timeline", dayGroups(entries));
   }
   mount(body, toolbar, tl);
+  if (current.entryFocus && view === "stage") {
+    // 포커스할 기록이 접힌 단계에 있으면 펼친다
+    const target = entries.find((e) => e.id === current.entryFocus);
+    if (target && current.collapsedStages.has(target.stage)) { current.collapsedStages.delete(target.stage); renderTimeline(body, container); return; }
+  }
   if (current.entryFocus) {
     const el = body.querySelector(`[data-entry="${current.entryFocus}"]`);
     if (el) { el.scrollIntoView({ block: "center" }); el.style.boxShadow = "0 0 0 3px rgba(47,163,169,.35)"; setTimeout(() => (el.style.boxShadow = ""), 2500); }
