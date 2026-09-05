@@ -3,8 +3,10 @@
  * 데모 데이터 시드 — 카테고리 2개, 연구원 4명, 프로젝트 4개, 날짜별 기록·코멘트·할 일
  *
  *   BASE_URL=http://127.0.0.1:8787 ADMIN_TOKEN=rn_... node scripts/seed-demo.mjs
+ *   기존 팀에 넣으려면: SEED_CATEGORY_A=<카테고리id> SEED_CATEGORY_B=<카테고리id> (없으면 "LLM 응용"/"시계열 예측" 팀을 새로 만듦)
  *
- * 이미 같은 이름의 카테고리가 있으면 건너뜁니다. 생성된 연구원 토큰을 출력하므로 데모 로그인에 쓸 수 있습니다.
+ * 데모 연구원(jiwon/seojun/haeun/minjae)이 이미 있으면 건너뜁니다. 생성된 연구원 토큰을 출력하므로 데모 로그인에 쓸 수 있습니다.
+ * 정리: 관리자 화면에서 메모가 "데모 데이터 (seed-demo)" 인 연구원을 비활성화하거나, 프로젝트를 보관하세요.
  */
 const BASE = (process.env.BASE_URL || "http://127.0.0.1:8787").replace(/\/$/, "");
 const ADMIN = process.env.ADMIN_TOKEN;
@@ -71,8 +73,8 @@ const d = (daysAgo) => new Date(Date.now() - daysAgo * 864e5).toISOString().slic
 
   console.log(`\n✅ 데모 데이터 생성 완료 (${BASE})`);
   console.log("데모 로그인 토큰 (지금만 표시):");
-  console.log(`  김지원 (LLM 리드 / 시계열 구성원): ${T.kim}`);
-  console.log(`  이서준 (LLM 구성원)                : ${T.lee}`);
-  console.log(`  박하은 (LLM 구성원 / 시계열 리드) : ${T.park}`);
-  console.log(`  최민재 (시계열 구성원)             : ${T.choi}`);
+  console.log(`  김지원 (팀A 리드 / 팀B 구성원): ${T.kim}`);
+  console.log(`  이서준 (팀A 구성원)            : ${T.lee}`);
+  console.log(`  박하은 (팀A 구성원 / 팀B 리드): ${T.park}`);
+  console.log(`  최민재 (팀B 구성원)            : ${T.choi}`);
 })().catch((e) => { console.error("실패:", e.message); process.exit(1); });
