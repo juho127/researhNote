@@ -161,7 +161,7 @@ npm run migrate:local                       # 로컬 D1 스키마
 node scripts/bootstrap-admin.mjs --local    # 로컬 관리자 토큰
 npm run dev                                 # http://127.0.0.1:8787
 BASE_URL=http://127.0.0.1:8787 ADMIN_TOKEN=rn_... npm test        # 54개 E2E 스모크
-BASE_URL=http://127.0.0.1:8787 ADMIN_TOKEN=rn_... npm run seed:demo   # 데모 데이터
+BASE_URL=http://127.0.0.1:8787 ADMIN_TOKEN=rn_... npm run seed:demo   # 데모 데이터 (기존 팀에 넣으려면 -- --team-a <id> --team-b <id>)
 ```
 
 `.dev.vars` 의 `ADMIN_TOKEN` 은 로컬 부트스트랩용 시크릿입니다 (배포본에도 `npx wrangler secret put ADMIN_TOKEN` 으로 넣으면 그 값으로 관리자 로그인 가능 — DB 관리자를 만든 뒤에는 지우는 것을 권장).

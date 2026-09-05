@@ -3,7 +3,8 @@
  * 데모 데이터 시드 — 카테고리 2개, 연구원 4명, 프로젝트 4개, 날짜별 기록·코멘트·할 일
  *
  *   BASE_URL=http://127.0.0.1:8787 ADMIN_TOKEN=rn_... node scripts/seed-demo.mjs
- *   기존 팀에 넣으려면: SEED_CATEGORY_A=<카테고리id> SEED_CATEGORY_B=<카테고리id> (없으면 "LLM 응용"/"시계열 예측" 팀을 새로 만듦)
+ *   기존 팀에 넣으려면: node scripts/seed-demo.mjs --team-a <카테고리id> --team-b <카테고리id>
+ *   (또는 환경변수 SEED_CATEGORY_A / SEED_CATEGORY_B. 둘 다 없으면 "LLM 응용"/"시계열 예측" 팀을 새로 만듦)
  *
  * 데모 연구원(jiwon/seojun/haeun/minjae)이 이미 있으면 건너뜁니다. 생성된 연구원 토큰을 출력하므로 데모 로그인에 쓸 수 있습니다.
  * 정리: 관리자 화면에서 메모가 "데모 데이터 (seed-demo)" 인 연구원을 비활성화하거나, 프로젝트를 보관하세요.
@@ -19,6 +20,10 @@ async function api(token, method, path, body, client = "web") {
   return data;
 }
 const d = (daysAgo) => new Date(Date.now() - daysAgo * 864e5).toISOString().slice(0, 10);
+const argv = process.argv.slice(2);
+const argOf = (k) => { const i = argv.indexOf(k); return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[i + 1] : undefined; };
+const TEAM_A = argOf("--team-a") || process.env.SEED_CATEGORY_A;
+const TEAM_B = argOf("--team-b") || process.env.SEED_CATEGORY_B;
 
 (async () => {
   const existing = await api(ADMIN, "GET", "/api/admin/categories?all=1");
