@@ -18,7 +18,22 @@ function layout(content, active) {
   const nav = h("nav.nav");
   const link = (href, label, key, badge) => nav.append(h("a", { href, class: active === key ? "active" : "" }, label, badge ? h("span.badge", badge) : null));
   link("#/", "홈", "home");
-  for (const m of me?.memberships || []) link(`#/team/${m.category_id}`, m.category_name, `team:${m.category_id}`);
+  const teams = me?.memberships || [];
+  if (teams.length <= 2) {
+    for (const m of teams) link(`#/team/${m.category_id}`, m.category_name, `team:${m.category_id}`);
+  } else {
+    // 팀이 많으면 드롭다운 하나로 묶는다 (팀 페이지에서는 현재 팀 이름 표시)
+    const cur = teams.find((m) => active === `team:${m.category_id}`);
+    const menu = h("div.dd-menu");
+    for (const m of teams) menu.append(h("a", { href: `#/team/${m.category_id}`, class: cur?.category_id === m.category_id ? "active" : "" }, m.category_name, m.role === "lead" ? h("span.pill.gold.sm", "리드") : m.role === "evaluator" ? h("span.pill.ai.sm", "평가자") : null));
+    menu.append(h("div.dd-sep"), h("a", { href: "#/lobby" }, "팀 로비 · 팀 찾기/가입"));
+    const btn = h("button.dd-btn", { type: "button", class: cur ? "active" : "", "aria-haspopup": "true", "aria-expanded": "false" }, cur ? cur.category_name : `내 팀 ${teams.length}`, h("span.caret", "▾"));
+    const dd = h("div.dd", btn, menu);
+    btn.addEventListener("click", (e) => { e.stopPropagation(); const open = dd.classList.toggle("open"); btn.setAttribute("aria-expanded", String(open)); });
+    document.addEventListener("click", () => dd.classList.remove("open"));
+    menu.addEventListener("click", () => dd.classList.remove("open"));
+    nav.append(dd);
+  }
   link("#/lobby", "팀 로비", "lobby", me?.pending_joins || null);
   if (me?.is_admin) link("#/admin", "관리자", "admin", (pendingRequests + reviewCount) || null);
   link("#/settings", "설정", "settings");
