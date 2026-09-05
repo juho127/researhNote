@@ -364,7 +364,7 @@ function evaluationCard(ev, p, rubric, max, container) {
 }
 
 function evaluationEditor(p, ev, rubric, container) {
-  const stage = stageSelect(ev?.stage || p.stage, [], p.track);
+  const stage = select(stages(p.track).map((s) => ({ value: s.id, label: s.milestone ? `${s.label} (${s.milestone})` : s.label })), { value: ev?.stage || p.stage });
   const title = input({ value: ev?.title || "", placeholder: `예: ${stageMilestone(p.stage) || stageLabel(p.stage) + " 평가"}`, maxlength: 200 });
   const inputs = rubric.map((x) => ({ x, el: input({ type: "number", min: 0, max: x.max, step: 0.5, value: ev?.scores?.[x.id] ?? "", placeholder: `0~${x.max}`, style: { width: "110px" } }) }));
   const totalEl = h("span.pill.ok", "");
