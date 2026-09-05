@@ -458,10 +458,10 @@ const TOOLS: ToolDef[] = [
   {
     name: "join_team",
     title: "팀 가입 / 가입 요청",
-    description: "팀에 가입한다. 정책이 open 이면 즉시 가입, approval 이면 리드 승인 요청이 만들어진다. 사용자가 명시적으로 원할 때만 호출.",
-    inputSchema: { type: "object", properties: { category_id: idProp("팀(카테고리) ID"), message: { type: "string", description: "리드에게 보낼 메시지 (선택)" } }, required: ["category_id"], additionalProperties: false },
+    description: "팀에 가입한다. 정책이 open 이면 즉시 가입, approval 이면 리드 승인 요청이 만들어진다. 팀 ID 는 category_id 인자로 넘긴다 (list_teams 결과의 id). 사용자가 명시적으로 원할 때만 호출.",
+    inputSchema: { type: "object", properties: { category_id: idProp("팀(카테고리) ID. list_teams 결과의 id 값"), message: { type: "string", description: "리드에게 보낼 메시지 (선택)" }, role: { type: "string", enum: ["lead", "member"], description: "관리자만: 구성원 목록에 올릴 역할 (기본 lead)" } }, required: ["category_id"], additionalProperties: false },
     handler: async (env, ctx, a) => {
-      const r = await TM.joinTeam(env, ctx, String(a.category_id), a.message);
+      const r = await TM.joinTeam(env, ctx, String(a.category_id), a.message, a.role);
       return { text: r.joined ? `${r.category_name} 에 가입했습니다` : `${r.category_name} 가입 요청을 보냈습니다 (리드 승인 대기)`, data: r };
     },
   },

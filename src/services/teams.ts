@@ -21,6 +21,8 @@ export interface LobbyTeam {
   entries_7d: number;
   last_activity_at: string | null;
   my_role: "admin" | "lead" | "member" | "evaluator" | null;
+  /** 실제 구성원 행의 역할 (관리자는 접근 권한과 별개로 구성원 목록에 올라 있는지 구분) */
+  my_membership: "lead" | "member" | "evaluator" | null;
   my_request_status: "pending" | "rejected" | null;
   my_request_id: string | null;
 }
@@ -42,11 +44,11 @@ export async function lobby(env: Env, ctx: AuthContext): Promise<LobbyTeam[]> {
     )
     .bind(daysAgoIso(7), ctx.user.id, ctx.user.id)
     .all<LobbyTeam>();
-  return (rs.results ?? []).map((t) => ({ ...t, my_role: categoryRole(ctx, t.id) }));
+  return (rs.results ?? []).map((t) => ({ ...t, my_role: categoryRole(ctx, t.id), my_membership: ctx.memberships.find((m) => m.category_id === t.id)?.role ?? null }));
 }
 
-/** 가입 (정책에 따라 즉시 가입 또는 요청 생성) */
-export async function joinTeam(env: Env, ctx: AuthContext, categoryId: string, message: unknown) {
+/** 가입 (정책에 따라 즉시 가입 또는 요청 생성). 관리자는 항상 즉시 가입하며 role(기본 lead)을 고를 수 있다 */
+export async function joinTeam(env: Env, ctx: AuthContext, categoryId: string, message: unknown, role?: unknown) {
   const c = await env.DB.prepare(`SELECT id, name, join_policy FROM categories WHERE id = ? AND archived_at IS NULL`).bind(categoryId).first<{ id: string; name: string; join_policy: JoinPolicy }>();
   if (!c) notFound("팀을 찾을 수 없습니다");
   if (ctx.memberships.some((m) => m.category_id === categoryId)) bad("이미 이 팀의 구성원입니다");
@@ -54,10 +56,11 @@ export async function joinTeam(env: Env, ctx: AuthContext, categoryId: string, m
   const at = nowIso();
   if (c.join_policy === "closed" && !ctx.isAdmin) throw new HttpError(403, "이 팀은 초대로만 가입할 수 있습니다. 리드나 관리자에게 요청하세요", "closed");
   if (c.join_policy === "open" || ctx.isAdmin) {
-    await env.DB.prepare(`INSERT OR REPLACE INTO memberships (user_id, category_id, role, created_at) VALUES (?, ?, 'member', ?)`).bind(ctx.user.id, categoryId, at).run();
+    const memberRole = ctx.isAdmin ? oneOf(role ?? "lead", ["lead", "member"] as const, "role") : "member";
+    await env.DB.prepare(`INSERT OR REPLACE INTO memberships (user_id, category_id, role, created_at) VALUES (?, ?, ?, ?)`).bind(ctx.user.id, categoryId, memberRole, at).run();
     await env.DB.prepare(`UPDATE join_requests SET status = 'approved', decided_at = ?, decided_by = ? WHERE user_id = ? AND category_id = ? AND status = 'pending'`).bind(at, ctx.user.id, ctx.user.id, categoryId).run();
-    await logActivity(env, { actor_id: ctx.user.id, category_id: categoryId, action: "team.join", target_id: ctx.user.id, summary: `${ctx.user.name} 가입 (${c.name})`, source: ctx.source });
-    return { joined: true, pending: false, category_id: categoryId, category_name: c.name };
+    await logActivity(env, { actor_id: ctx.user.id, category_id: categoryId, action: "team.join", target_id: ctx.user.id, summary: `${ctx.user.name} 가입 (${c.name}${memberRole === "lead" ? ", 리드" : ""})`, source: ctx.source });
+    return { joined: true, pending: false, role: memberRole, category_id: categoryId, category_name: c.name };
   }
   const existing = await env.DB.prepare(`SELECT id FROM join_requests WHERE user_id = ? AND category_id = ? AND status = 'pending'`).bind(ctx.user.id, categoryId).first();
   if (existing) bad("이미 가입 요청이 대기 중입니다");

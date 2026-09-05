@@ -157,8 +157,8 @@ add("DELETE", "/api/tasks/:id", async (_r, env, ctx, p) => {
 // ---------- 팀 로비 / 가입 ----------
 add("GET", "/api/lobby", async (_r, env, ctx) => json(await TM.lobby(env, ctx)));
 add("POST", "/api/lobby/:id/join", async (req, env, ctx, p) => {
-  const b = await readJson<{ message?: unknown }>(req);
-  return json(await TM.joinTeam(env, ctx, p.id, b.message));
+  const b = await readJson<{ message?: unknown; role?: unknown }>(req);
+  return json(await TM.joinTeam(env, ctx, p.id, b.message, b.role));
 });
 add("DELETE", "/api/lobby/:id/join", async (_r, env, ctx, p) => json(await TM.leaveTeam(env, ctx, p.id)));
 add("GET", "/api/join-requests", async (_r, env, ctx, _p, url) => json(await TM.listJoinRequests(env, ctx, { category_id: q(url, "category_id"), status: q(url, "status") })));

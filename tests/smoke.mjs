@@ -296,6 +296,14 @@ const ts = Date.now().toString(36);
   ok("membership visible after join (multi-team)", meAfter.data.memberships.length === 2);
   const joinClosed = await api(NEW, "POST", `/api/lobby/${closedCat.data.id}/join`, {});
   ok("closed team → 403", joinClosed.status === 403);
+  const adminLobby = await api(ADMIN, "GET", "/api/lobby");
+  const adminView = adminLobby.data.find((t) => t.id === closedCat.data.id);
+  ok("admin lobby shows my_role=admin but my_membership=null", adminView?.my_role === "admin" && adminView?.my_membership === null);
+  const adminJoin = await api(ADMIN, "POST", `/api/lobby/${closedCat.data.id}/join`, { role: "lead" });
+  ok("admin joins closed team as lead", adminJoin.status === 200 && adminJoin.data.joined === true && adminJoin.data.role === "lead");
+  const adminLobby2 = await api(ADMIN, "GET", "/api/lobby");
+  ok("admin now listed as lead member", adminLobby2.data.find((t) => t.id === closedCat.data.id)?.my_membership === "lead");
+  await api(ADMIN, "DELETE", `/api/admin/users/${(await api(ADMIN, "GET", "/api/me")).data.user.id}/memberships/${closedCat.data.id}`);
   // 승인 정책 팀: 외부인(재활성화)로 요청 → 리드 승인
   await api(ADMIN, "PATCH", `/api/admin/users/${other.data.user.id}`, { disabled: false });
   const OUT2 = (await api(ADMIN, "POST", "/api/admin/tokens", { user_id: other.data.user.id, label: "lobby" })).data.token;

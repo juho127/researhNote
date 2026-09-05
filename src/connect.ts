@@ -89,14 +89,14 @@ MCP 서버가 \`initialize\` 응답으로 사용 원칙을 주므로 필수는 �
 - MCP 로: \`whoami\` 도구를 호출해 사용자 이름·소속·프로젝트가 나오면 성공.
 - 또는 REST 로: \`curl -s ${base}/api/me -H "Authorization: Bearer <토큰>"\` 가 200 이면 성공. 401 이면 토큰 오류(회수/오타).
 - 사용자에게 결과를 요약해 알려준다: 사용자 이름, 소속 카테고리, 프로젝트 수, 그리고 "이제 '오늘 한 일 연구노트에 기록해' 라고 말하면 됩니다".
-- 소속 팀이 없으면 \`list_teams\` 로 팀 목록을 보여주고, 사용자가 고르면 \`join_team\` 으로 가입(또는 가입 요청)한다.
+- 소속 팀이 없으면 \`list_teams\` 로 팀 목록을 보여주고, 사용자가 고르면 \`join_team\` 으로 가입(또는 가입 요청)한다. 인자는 \`category_id\` (\`list_teams\` 결과의 \`id\`; 팀 = 카테고리, \`team_id\` 가 아님).
 
 ## 6. 이후 사용법 (요약)
 
 - 세션 시작: \`whoami\` → 기록할 프로젝트 확정 (없으면 사용자에게 묻고, 새 연구일 때만 \`create_project\`)
 - 작업 후: \`log_progress\` (제목은 결과가 드러나게, 본문은 \`## 한 일 / ## 결과 / ## 다음 할 일 / ## 메모\`)
 - 누적 결론 변화: \`update_stage\` (읽고 병합 후 덮어쓰기) · 단계 진행: \`advance_stage\` · 다음 할 일: \`add_task\`
-- 팀: \`team_feed\`, \`team_overview\`, \`add_comment\`, \`set_review\` · 팀 찾기/가입: \`list_teams\`, \`join_team\` · 보고서: \`get_report\`
+- 팀: \`team_feed\`, \`team_overview\`, \`add_comment\`, \`set_review\` · 팀 찾기/가입: \`list_teams\`, \`join_team(category_id)\` · 보고서: \`get_report\`
 - 평가(마일스톤별, 평가자 여러 명): \`list_evaluations\` → 평가자는 \`add_evaluation\`(루브릭 점수+피드백), 팀은 \`respond_evaluation\`(답변)
 - 트랙: 카테고리가 논문(paper) 또는 캡스톤(capstone) 트랙. 단계 id 는 \`get_project\` 의 "단계 순서"를 따른다. 캡스톤은 협업자(팀원)를 \`update_project.collaborators\` 로 지정
 - 전체 지침: \`${base}/SKILL.md\`
