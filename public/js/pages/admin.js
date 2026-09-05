@@ -4,11 +4,12 @@ import { feedList } from "./home.js";
 export async function render(container, sub, query) {
   const tab = sub || "overview";
   const tabs = h("div.tabs");
-  for (const [k, l] of [["overview", "개요"], ["categories", "카테고리"], ["users", "연구원"], ["tokens", "토큰"], ["activity", "활동 로그"]]) tabs.append(h("button", { class: tab === k ? "active" : "", onclick: () => (location.hash = `#/admin/${k}`) }, l));
+  for (const [k, l] of [["overview", "개요"], ["requests", "발급 신청"], ["categories", "카테고리"], ["users", "연구원"], ["tokens", "토큰"], ["activity", "활동 로그"]]) tabs.append(h("button", { class: tab === k ? "active" : "", onclick: () => (location.hash = `#/admin/${k}`) }, l));
   const body = h("div", h("div.loading", h("span.spinner")));
   mount(container, h("header.hero", { style: { padding: "18px 0 6px", border: 0, margin: 0 } }, h("div.eyebrow", "Administration"), h("h1", "관리자 대시보드"), h("p.sub", "카테고리(팀)·연구원·토큰을 관리하고 전체 진행 현황을 봅니다")), tabs, body);
   try {
     if (tab === "overview") await overview(body);
+    else if (tab === "requests") await requests(body, query);
     else if (tab === "categories") await categories(body);
     else if (tab === "users") await users(body, query);
     else if (tab === "tokens") await tokens(body, query);
@@ -21,6 +22,7 @@ async function overview(body) {
   const o = await get("/api/admin/overview");
   const c = o.counts;
   const stats = [[c.users, "연구원"], [c.categories, "카테고리"], [c.active_projects, "진행 중 프로젝트"], [c.done_projects, "완료 프로젝트"], [c.entries, "전체 기록"], [c.entries_7d, "7일 기록"], [c.entries_30d, "30일 기록"], [c.entries_mcp, "AI(MCP) 기록"], [c.review_requested, "검토 대기"], [c.active_tokens, "활성 토큰"]];
+  const pendingBanner = c.pending_requests || c.pending_joins ? h("a.card.hover.pad-s", { href: "#/admin/requests", style: { display: "block", marginBottom: "14px", borderColor: "var(--goldlight)", background: "#FFF9E8" } }, h("b", [c.pending_requests ? `토큰 발급 신청 ${c.pending_requests}건` : null, c.pending_requests && c.pending_joins ? " · " : null, c.pending_joins ? `팀 가입 요청 ${c.pending_joins}건` : null], "이 승인을 기다립니다"), h("span.small.muted", " → 발급 신청 탭에서 처리")) : null;
   const maxStage = Math.max(1, ...Object.values(o.by_stage));
   const stageBars = h("div.card", h("h3", "진행 중 프로젝트 · 단계 분포"), h("div.stack", { style: { marginTop: "10px", gap: "6px" } }, stages().map((s) => h("div.row", h("span.small", { style: { width: "80px" } }, s.label), h("div", { style: { flex: 1, height: "10px", background: "var(--wash)", borderRadius: "5px", overflow: "hidden" } }, h("i", { style: { display: "block", height: "100%", width: `${(o.by_stage[s.id] / maxStage) * 100}%`, background: "var(--mint)" } })), h("span.small.muted", { style: { width: "24px", textAlign: "right" } }, String(o.by_stage[s.id]))))));
   const days = o.daily_activity;
@@ -38,6 +40,7 @@ async function overview(body) {
   const dl = o.deadlines.length ? h("div.stack", o.deadlines.map((p) => h("a.card.hover.pad-s", { href: `#/project/${p.id}` }, h("div.row", h("b", p.deadline), h("span", p.title), h("span.spacer"), pill(stageLabel(p.stage), "sm")), h("div.small.muted", `${p.category_name} · ${p.owner_name}${p.target_venue ? " · " + p.target_venue : ""}`)))) : h("div.small.muted", "다가오는 마감 없음");
 
   mount(body,
+    pendingBanner,
     h("div.grid.c4", stats.map(([n, l]) => h("div.card.stat", h("div.n", String(n)), h("div.l", l)))),
     h("div.grid.c2", { style: { marginTop: "14px" } }, stageBars, activityCard),
     h("div.section", h("div.section-h", h("h2", "카테고리별 현황")), catTable),
@@ -46,26 +49,85 @@ async function overview(body) {
   );
 }
 
+// ---------- 발급 신청 ----------
+async function requests(body, query) {
+  const status = query.status || "pending";
+  const [list, cats] = await Promise.all([get(`/api/admin/requests?status=${status}`), get("/api/admin/categories")]);
+  const seg = h("div.seg");
+  for (const [k, l] of [["pending", "대기"], ["approved", "승인됨"], ["rejected", "거절됨"], ["all", "전체"]]) seg.append(h("button", { class: status === k ? "active" : "", onclick: () => (location.hash = `#/admin/requests?status=${k}`) }, l));
+  const origin = location.origin;
+  const rows = list.map((r) => h("tr", { class: r.status === "pending" ? "" : "dim" },
+    h("td", h("b", r.name), h("div.tiny.muted", r.email || "-")),
+    h("td.small", r.category_name || h("span.muted", "미정")),
+    h("td.small", { style: { maxWidth: "280px" } }, r.note || ""),
+    h("td.small.muted", fmtDT(r.created_at)),
+    h("td", r.status === "pending" ? pill("대기", "warn sm") : r.status === "approved" ? [pill("승인", "ok sm"), r.claimed_at ? h("div.tiny.muted", `수령 ${fmtRel(r.claimed_at)}`) : h("div.tiny", { style: { color: "var(--brick)" } }, "미수령")] : pill("거절", "bad sm"),
+      r.decided_at ? h("div.tiny.muted", `${r.decided_by_name || ""} · ${fmtRel(r.decided_at)}`) : null, r.decision_note && r.status === "rejected" ? h("div.tiny.muted", r.decision_note) : null),
+    h("td.right", r.status === "pending"
+      ? h("div.row", { style: { justifyContent: "flex-end", gap: "4px" } }, h("button.btn.xs.primary", { onclick: () => approveDialog(r, cats, body) }, "승인"), h("button.btn.xs.danger", { onclick: () => rejectDialog(r, body) }, "거절"))
+      : h("div.row", { style: { justifyContent: "flex-end", gap: "4px" } }, r.user_id ? h("a.btn.xs", { href: "#/admin/users" }, "연구원") : null, h("button.btn.ghost.xs", { onclick: async () => { if (await confirmDialog("이 신청 기록을 삭제할까요?", { danger: true, okLabel: "삭제" })) { await del(`/api/admin/requests/${r.id}`); render(body.parentElement, "requests", query); } } }, "삭제"))),
+  ));
+  const joins = await get(`/api/join-requests?status=${status === "all" ? "all" : status === "pending" ? "pending" : status}`);
+  const joinRows = joins.map((r) => h("tr", { class: r.status === "pending" ? "" : "dim" },
+    h("td", h("b", r.user_name), h("div.tiny.muted", r.user_email || r.user_id)),
+    h("td", h("a", { href: `#/team/${r.category_id}?view=members` }, r.category_name)),
+    h("td.small", { style: { maxWidth: "280px" } }, r.message || ""),
+    h("td.small.muted", fmtDT(r.created_at)),
+    h("td", r.status === "pending" ? pill("대기", "warn sm") : r.status === "approved" ? pill("승인", "ok sm") : r.status === "rejected" ? pill("거절", "bad sm") : pill("취소", "mute sm"), r.decided_at ? h("div.tiny.muted", `${r.decided_by_name || ""} · ${fmtRel(r.decided_at)}`) : null),
+    h("td.right", r.status === "pending" ? h("div.row", { style: { justifyContent: "flex-end", gap: "4px" } },
+      h("button.btn.xs.primary", { onclick: async () => { await post(`/api/join-requests/${r.id}/approve`, {}); toast("승인했습니다"); render(body.parentElement, "requests", query); } }, "승인"),
+      h("button.btn.xs.danger", { onclick: async () => { await post(`/api/join-requests/${r.id}/reject`, { note: "" }); toast("거절했습니다"); render(body.parentElement, "requests", query); } }, "거절")) : null),
+  ));
+  mount(body,
+    h("div.row.between", { style: { marginBottom: "12px" } }, h("div.row", seg), h("span.small.muted", "신청 페이지: ", h("a", { href: "#/apply", target: "_blank" }, `${origin}/#/apply`), " · AI 연동: ", h("a", { href: "#/connect", target: "_blank" }, `${origin}/connect`))),
+    h("div.section-h", { style: { marginTop: 0 } }, h("h2", "토큰 발급 신청"), h("p.sub", `${list.length}건 · 신규 연구원`)),
+    list.length ? h("div.table-wrap", h("table.table", h("thead", h("tr", h("th", "신청자"), h("th", "희망 카테고리"), h("th", "메모"), h("th", "신청일"), h("th", "상태"), h("th", ""))), h("tbody", rows))) : h("div.empty", status === "pending" ? "대기 중인 신청이 없습니다" : "신청이 없습니다"),
+    h("p.small.muted", { style: { marginTop: "10px" } }, "승인하면 연구원 계정과 소속이 만들어지고, 신청자는 자기 수령 코드로 토큰을 직접 1회 수령합니다(관리자는 토큰을 보지 않음). 수령 전 분실 시 [연구원] 탭에서 토큰을 발급해 전달하세요."),
+    h("div.section-h", { style: { marginTop: "26px" } }, h("h2", "팀 가입 요청"), h("p.sub", `${joins.length}건 · 기존 연구원의 로비 가입 요청 (팀 리드도 팀 페이지에서 처리 가능)`)),
+    joins.length ? h("div.table-wrap", h("table.table", h("thead", h("tr", h("th", "연구원"), h("th", "팀"), h("th", "메시지"), h("th", "요청일"), h("th", "상태"), h("th", ""))), h("tbody", joinRows))) : h("div.empty", "팀 가입 요청이 없습니다"),
+  );
+}
+function approveDialog(r, cats, body) {
+  const name = input({ value: r.name });
+  const id = input({ placeholder: "비우면 이름에서 자동 생성 (영문·숫자·하이픈)" });
+  const email = input({ value: r.email || "" });
+  const cat = select([{ value: "", label: "소속 없음 (나중에 배정)" }, ...cats.map((c) => ({ value: c.id, label: c.name }))], { value: r.category_id || "" });
+  const role = select([{ value: "member", label: "구성원" }, { value: "lead", label: "리드 (검토 승인 권한)" }], { value: "member" });
+  const note = input({ value: r.note || "" });
+  modal({ title: `승인 — ${r.name}`, body: h("div.stack", h("div.form-grid", field("이름", name), field("ID", id), field("이메일", email)), h("div.form-grid", field("소속 카테고리", cat), field("역할", role)), field("메모", note), h("p.help", "승인 즉시 계정이 생성됩니다. 토큰은 신청자가 수령 코드로 직접 받습니다.")),
+    actions: [{ label: "취소" }, { label: "승인", cls: "primary", onClick: async () => {
+      await post(`/api/admin/requests/${r.id}/approve`, { name: name.value.trim(), id: id.value.trim() || undefined, email: email.value.trim(), category_id: cat.value || null, role: role.value, note: note.value });
+      toast("승인했습니다"); render(body.parentElement, "requests", {});
+    } }] });
+}
+function rejectDialog(r, body) {
+  const reason = textarea({ rows: 3, placeholder: "사유 (신청자에게 표시)" });
+  modal({ title: `거절 — ${r.name}`, body: field("사유", reason),
+    actions: [{ label: "취소" }, { label: "거절", cls: "danger", onClick: async () => { await post(`/api/admin/requests/${r.id}/reject`, { reason: reason.value }); toast("거절했습니다"); render(body.parentElement, "requests", {}); } }] });
+}
+
 // ---------- 카테고리 ----------
 async function categories(body) {
   const cats = await get("/api/admin/categories?all=1");
-  const table = h("div.table-wrap", h("table.table", h("thead", h("tr", h("th", "이름"), h("th", "ID"), h("th", "설명"), h("th", "리드"), h("th", "구성원"), h("th", "프로젝트"), h("th", ""))),
+  const POL = { open: ["즉시", "ok"], approval: ["승인", "warn"], closed: ["초대", "mute"] };
+  const table = h("div.table-wrap", h("table.table", h("thead", h("tr", h("th", "이름"), h("th", "ID"), h("th", "설명"), h("th", "가입"), h("th", "리드"), h("th", "구성원"), h("th", "프로젝트"), h("th", ""))),
     h("tbody", cats.map((c) => h("tr", { class: c.archived_at ? "dim" : "" },
       h("td", h("a", { href: `#/team/${c.id}`, style: { fontWeight: 700 } }, c.name), c.archived_at ? [" ", pill("보관", "mute sm")] : null),
-      h("td", h("code", c.id)), h("td.small", c.description || ""), h("td.small", c.lead_names || "-"), h("td", String(c.member_count)), h("td", String(c.project_count)),
+      h("td", h("code", c.id)), h("td.small", c.description || ""), h("td", pill((POL[c.join_policy] || [c.join_policy, ""])[0], (POL[c.join_policy] || ["", ""])[1] + " sm")), h("td.small", c.lead_names || "-"), h("td", String(c.member_count)), h("td", String(c.project_count)),
       h("td.right", h("button.btn.xs", { onclick: () => categoryDialog(c, body) }, "수정")))))));
   mount(body, h("div.row.between", { style: { marginBottom: "12px" } }, h("p.small.muted", "카테고리 = 연구 그룹/팀. 같은 카테고리 구성원끼리 프로젝트를 공유·검토합니다."), h("button.btn.primary", { onclick: () => categoryDialog(null, body) }, "+ 카테고리")), cats.length ? table : h("div.empty", "카테고리를 만들어 연구원을 배정하세요"));
 }
 function categoryDialog(c, body) {
   const name = input({ value: c?.name || "", placeholder: "예: LLM 응용, 시계열 예측, 인과추론" });
   const id = input({ value: c?.id || "", placeholder: "비우면 이름에서 자동 생성 (영문·숫자·하이픈)", disabled: !!c });
-  const desc = textarea({ value: c?.description || "", rows: 3, placeholder: "연구 주제·목표 (팀 페이지와 보고서에 표시)" });
+  const desc = textarea({ value: c?.description || "", rows: 3, placeholder: "연구 주제·목표 (팀 페이지·로비·보고서에 표시)" });
+  const policy = select([{ value: "approval", label: "승인 후 가입 (리드·관리자가 로비 가입 요청을 승인)" }, { value: "open", label: "즉시 가입 (로비에서 누구나)" }, { value: "closed", label: "초대만 (관리자가 직접 배정)" }], { value: c?.join_policy || "approval" });
   const archived = h("input", { type: "checkbox", checked: !!c?.archived_at });
-  modal({ title: c ? "카테고리 수정" : "새 카테고리", body: h("div.stack", field("이름", name), field("ID", id), field("설명", desc), c ? h("label.check", archived, "보관 (목록에서 숨김, 구성원 접근 차단)") : null),
+  modal({ title: c ? "카테고리 수정" : "새 카테고리", body: h("div.stack", field("이름", name), field("ID", id), field("설명", desc), field("가입 정책", policy, "팀 로비에서의 가입 방식"), c ? h("label.check", archived, "보관 (목록에서 숨김, 구성원 접근 차단)") : null),
     actions: [{ label: "취소" }, { label: c ? "저장" : "만들기", cls: "primary", onClick: async () => {
       if (!name.value.trim()) { toast("이름을 입력하세요", true); return false; }
-      if (c) await patch(`/api/admin/categories/${c.id}`, { name: name.value.trim(), description: desc.value, archived: archived.checked });
-      else await post("/api/admin/categories", { name: name.value.trim(), description: desc.value, id: id.value.trim() || undefined });
+      if (c) await patch(`/api/admin/categories/${c.id}`, { name: name.value.trim(), description: desc.value, archived: archived.checked, join_policy: policy.value });
+      else await post("/api/admin/categories", { name: name.value.trim(), description: desc.value, id: id.value.trim() || undefined, join_policy: policy.value });
       toast("저장했습니다"); state.me = null; window.dispatchEvent(new Event("rn:refresh"));
     } }] });
 }

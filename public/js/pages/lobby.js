@@ -1,0 +1,69 @@
+// 팀 로비: 전체 팀 목록 · 가입 · 내 상태
+import { state, get, post, del, h, mount, pill, avatar, fmtRel, textarea, field, modal, confirmDialog, toast, errToast, loadMe } from "../core.js";
+
+const POLICY = { open: ["즉시 가입", "ok"], approval: ["승인 후 가입", "warn"], closed: ["초대만", "mute"] };
+
+export async function render(container, query) {
+  mount(container, h("div.loading", h("span.spinner"), " 불러오는 중…"));
+  const teams = await get("/api/lobby");
+  const me = state.me;
+  const mine = teams.filter((t) => t.my_role);
+  const others = teams.filter((t) => !t.my_role);
+
+  const card = (t) => {
+    const [pl, pc] = POLICY[t.join_policy] || ["", ""];
+    const members = (t.member_names || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const actions = h("div.row", { style: { marginTop: "auto", paddingTop: "10px", gap: "6px" } });
+    const add = (...els) => actions.append(...els.filter(Boolean));
+    if (t.my_role) {
+      add(h("a.btn.primary.sm", { href: `#/team/${t.id}` }, "팀 페이지"), t.my_role === "member" || t.my_role === "lead" ? h("button.btn.ghost.sm", { onclick: () => leave(t, container) }, "탈퇴") : null);
+    } else if (t.my_request_status === "pending") {
+      add(pill("가입 요청 대기", "warn"), h("span.spacer"), h("button.btn.sm", { onclick: () => leave(t, container) }, "요청 취소"));
+    } else if (t.join_policy === "closed" && !me.is_admin) {
+      add(h("span.small.muted", "리드나 관리자의 초대가 필요합니다"));
+    } else {
+      add(h("button.btn.primary.sm", { onclick: () => joinDialog(t, container) }, t.join_policy === "open" || me.is_admin ? "가입하기" : "가입 요청"), t.my_request_status === "rejected" ? pill("이전 요청 거절됨", "bad sm") : null);
+    }
+    return h("div.card.pcard", { style: { minHeight: "200px" } },
+      h("div.row.between.top", h("div.row", { style: { gap: "6px" } }, pill(pl, pc + " sm"), t.my_role ? pill(t.my_role === "lead" ? "리드" : t.my_role === "admin" ? "관리자" : "구성원", "navy sm") : null), h("span.small.muted", t.last_activity_at ? `활동 ${fmtRel(t.last_activity_at)}` : "활동 없음")),
+      h("div.title", t.name),
+      t.description ? h("div.small", { style: { color: "#3C4E57" } }, t.description.length > 140 ? t.description.slice(0, 140) + "…" : t.description) : null,
+      h("div.row", { style: { gap: "4px", flexWrap: "wrap", marginTop: "4px" } }, members.slice(0, 8).map((n) => avatar(n)), members.length > 8 ? h("span.tiny.muted", `+${members.length - 8}`) : null),
+      h("div.small.muted", `구성원 ${t.member_count}${t.lead_names ? ` · 리드 ${t.lead_names}` : ""} · 진행 중 프로젝트 ${t.active_projects} · 이번 주 기록 ${t.entries_7d}`),
+      actions,
+    );
+  };
+
+  mount(container,
+    h("header.hero", { style: { padding: "22px 0 16px" } }, h("div.eyebrow", "Lobby"), h("h1", "팀 로비"), h("p.sub", "연구실의 팀(연구 그룹)을 둘러보고 가입하세요. 여러 팀에 동시에 속할 수 있습니다. 가입하면 팀 페이지에서 팀원들의 프로젝트·활동을 보고 함께 검토합니다.")),
+    mine.length ? h("div.section", { style: { marginTop: 0 } }, h("div.section-h", h("h2", "내 팀"), h("p.sub", `${mine.length}개`)), h("div.grid.c3", mine.map(card))) : null,
+    h("div.section", h("div.section-h", h("h2", mine.length ? "다른 팀" : "가입 가능한 팀"), h("p.sub", `${others.length}개`)),
+      others.length ? h("div.grid.c3", others.map(card)) : h("div.empty", teams.length ? "모든 팀에 이미 속해 있습니다" : "아직 팀이 없습니다. 관리자가 팀을 만들면 여기에 표시됩니다.")),
+  );
+}
+
+function joinDialog(t, container) {
+  const me = state.me;
+  const immediate = t.join_policy === "open" || me.is_admin;
+  const msg = textarea({ rows: 3, placeholder: "자기소개 · 관심 주제 · 지도교수 등 (리드가 승인 판단에 참고)" });
+  modal({
+    title: `${t.name} ${immediate ? "가입" : "가입 요청"}`,
+    body: h("div.stack", t.description ? h("p.small", { style: { margin: 0, color: "#3C4E57" } }, t.description) : null, immediate ? h("p.small.muted", "즉시 가입됩니다.") : field("메시지 (선택)", msg)),
+    actions: [{ label: "취소" }, { label: immediate ? "가입" : "요청 보내기", cls: "primary", onClick: async () => {
+      const r = await post(`/api/lobby/${t.id}/join`, { message: msg.value });
+      if (r.joined) { toast(`${t.name}에 가입했습니다`); state.me = null; await loadMe(); window.dispatchEvent(new Event("rn:refresh")); }
+      else { toast("가입 요청을 보냈습니다. 리드 승인을 기다리세요"); render(container, {}); }
+    } }],
+  });
+}
+
+async function leave(t, container) {
+  const isReq = t.my_request_status === "pending" && !t.my_role;
+  if (!(await confirmDialog(isReq ? `${t.name} 가입 요청을 취소할까요?` : `${t.name}에서 탈퇴할까요? 팀 프로젝트와 기록을 더 볼 수 없게 됩니다.`, { danger: !isReq, okLabel: isReq ? "요청 취소" : "탈퇴" }))) return;
+  try {
+    await del(`/api/lobby/${t.id}/join`);
+    toast(isReq ? "요청을 취소했습니다" : "탈퇴했습니다");
+    state.me = null; await loadMe();
+    window.dispatchEvent(new Event("rn:refresh"));
+  } catch (e) { errToast(e); }
+}

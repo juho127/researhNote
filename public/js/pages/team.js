@@ -1,4 +1,4 @@
-import { state, get, h, mount, pill, avatar, stages, stageLabel, fmtRel, daysSince, openReport, downloadFile, input, field, modal, daysAgo, today, STATUS_LABEL } from "../core.js";
+import { state, get, post, h, mount, pill, avatar, stages, stageLabel, fmtRel, fmtDT, daysSince, openReport, downloadFile, input, textarea, select, field, modal, daysAgo, today, toast, errToast, STATUS_LABEL } from "../core.js";
 import { projectCard, feedList, newProjectDialog } from "./home.js";
 
 export async function render(container, categoryId, query) {
@@ -9,7 +9,8 @@ export async function render(container, categoryId, query) {
   const me = state.me;
 
   const viewSeg = h("div.seg");
-  for (const [k, l] of [["board", "보드"], ["list", "목록"], ["members", "구성원"], ["review", `검토 대기${detail.review_queue.length ? " " + detail.review_queue.length : ""}`], ["feed", "활동"]]) {
+  const jrCount = (detail.join_requests || []).length;
+  for (const [k, l] of [["board", "보드"], ["list", "목록"], ["members", `구성원${jrCount ? " · 가입 요청 " + jrCount : ""}`], ["review", `검토 대기${detail.review_queue.length ? " " + detail.review_queue.length : ""}`], ["feed", "활동"]]) {
     viewSeg.append(h("button", { class: view === k ? "active" : "", onclick: () => (location.hash = `#/team/${categoryId}?view=${k}`) }, l));
   }
 
@@ -29,7 +30,7 @@ export async function render(container, categoryId, query) {
   let body;
   if (view === "board") body = renderBoard(board);
   else if (view === "list") body = renderList(detail.projects);
-  else if (view === "members") body = renderMembers(detail);
+  else if (view === "members") body = renderMembers(detail, categoryId, container, query);
   else if (view === "review") body = renderReview(detail.review_queue);
   else body = h("div.card", feedList(detail.activity));
 
@@ -74,7 +75,19 @@ function renderList(projects) {
   return h("div.table-wrap", tbl);
 }
 
-function renderMembers(detail) {
+const POLICY_LABEL = { open: "즉시 가입", approval: "리드·관리자 승인 후 가입", closed: "초대만" };
+
+function renderMembers(detail, categoryId, container, query) {
+  const canDecide = detail.my_role === "admin" || detail.my_role === "lead";
+  const jr = detail.join_requests || [];
+  const requestsBox = canDecide
+    ? h("div.card", { style: { marginBottom: "14px", borderColor: jr.length ? "var(--goldlight)" : "var(--rule)" } },
+        h("div.row.between", h("h3", `가입 요청 ${jr.length ? jr.length + "건" : ""}`), h("span.small.muted", `가입 정책: ${POLICY_LABEL[detail.category.join_policy] || detail.category.join_policy} (관리자가 변경)`)),
+        jr.length
+          ? h("div.stack", { style: { marginTop: "10px" } }, jr.map((r) => h("div.row", { style: { padding: "8px 0", borderTop: "1px solid var(--rule)" } }, avatar(r.user_name), h("div", { style: { flex: 1 } }, h("b", r.user_name), r.user_email ? h("span.small.muted", ` · ${r.user_email}`) : null, h("div.small", r.message || h("span.muted", "(메시지 없음)")), h("div.tiny.muted", fmtDT(r.created_at))),
+              h("button.btn.sm.primary", { onclick: () => decide(r, true, categoryId, container, query) }, "승인"), h("button.btn.sm.danger", { onclick: () => decide(r, false, categoryId, container, query) }, "거절"))))
+          : h("p.small.muted", { style: { margin: "6px 0 0" } }, "대기 중인 가입 요청이 없습니다. 팀원은 [팀 로비]에서 가입을 요청합니다."))
+    : h("p.small.muted", { style: { marginBottom: "12px" } }, `가입 정책: ${POLICY_LABEL[detail.category.join_policy] || detail.category.join_policy} · 다른 팀은 [팀 로비]에서 찾을 수 있습니다.`);
   const grid = h("div.grid.c3");
   for (const m of detail.members) {
     const mine = detail.projects.filter((p) => p.owner_id === m.id && p.status !== "archived");
@@ -84,7 +97,18 @@ function renderMembers(detail) {
       mine.length ? h("div.stack", { style: { marginTop: "10px", gap: "4px" } }, mine.map((p) => h("a.small", { href: `#/project/${p.id}` }, "· ", p.title, " ", pill(stageLabel(p.stage), "sm")))) : h("div.tiny.muted", { style: { marginTop: "8px" } }, "프로젝트 없음"),
     ));
   }
-  return grid;
+  return h("div", requestsBox, grid);
+}
+
+function decide(r, approve, categoryId, container, query) {
+  const note = textarea({ rows: 2, placeholder: approve ? "환영 메시지 (선택)" : "거절 사유 (신청자에게 표시)" });
+  const role = select([{ value: "member", label: "구성원" }, { value: "lead", label: "리드" }], { value: "member" });
+  modal({ title: `${approve ? "가입 승인" : "가입 거절"} — ${r.user_name}`, body: h("div.stack", approve ? field("역할", role) : null, field(approve ? "메모" : "사유", note)),
+    actions: [{ label: "취소" }, { label: approve ? "승인" : "거절", cls: approve ? "primary" : "danger", onClick: async () => {
+      await post(`/api/join-requests/${r.id}/${approve ? "approve" : "reject"}`, { note: note.value, role: role.value });
+      toast(approve ? "가입을 승인했습니다" : "거절했습니다");
+      render(container, categoryId, { ...query, view: "members" });
+    } }] });
 }
 
 function renderReview(queue) {

@@ -6,6 +6,7 @@ import { daysAgoIso } from "../lib/time";
 import { listActivity } from "./admin";
 import { listProjects } from "./projects";
 import { listEntries } from "./entries";
+import { pendingJoinCount } from "./teams";
 
 /** /api/me — 로그인 사용자 요약 */
 export async function me(env: Env, ctx: AuthContext) {
@@ -15,7 +16,9 @@ export async function me(env: Env, ctx: AuthContext) {
     tokenHint = t?.hint ?? null;
   }
   const projects = await listProjects(env, ctx, { owner_id: ctx.user.id, status: "all", limit: 100 });
+  const pendingJoins = await pendingJoinCount(env, ctx);
   return {
+    pending_joins: pendingJoins,
     user: { id: ctx.user.id, name: ctx.user.name, email: ctx.user.email, role: ctx.user.role, created_at: ctx.user.created_at },
     is_admin: ctx.isAdmin,
     bootstrap: ctx.tokenId === null,
@@ -48,7 +51,13 @@ export async function categoryDetail(env: Env, ctx: AuthContext, categoryId: str
     listActivity(env, { category_id: categoryId, limit: 40 }),
     listEntries(env, ctx, { category_id: categoryId, review_status: "requested", limit: 50, with_content: false }),
   ]);
-  return { category: cat, members: members.results, projects, activity, review_queue: reviewQueue, my_role: requireCategoryMember(ctx, categoryId) };
+  const myRole = requireCategoryMember(ctx, categoryId);
+  let joinRequests: unknown[] = [];
+  if (myRole === "admin" || myRole === "lead") {
+    const jr = await env.DB.prepare(`SELECT r.id, r.user_id, u.name AS user_name, u.email AS user_email, r.message, r.created_at FROM join_requests r JOIN users u ON u.id = r.user_id WHERE r.category_id = ? AND r.status = 'pending' ORDER BY r.created_at`).bind(categoryId).all();
+    joinRequests = jr.results ?? [];
+  }
+  return { category: cat, members: members.results, projects, activity, review_queue: reviewQueue, my_role: myRole, join_requests: joinRequests };
 }
 
 /** 팀 활동 피드 (소속 카테고리 전체 또는 지정 카테고리) */

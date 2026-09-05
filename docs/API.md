@@ -7,11 +7,22 @@
 - 선택 헤더 `X-Client: web|mcp|api` — 활동 로그의 `source` 에 기록 (기본 `api`)
 - CORS: `*` 허용 (Bearer 인증이므로 쿠키 없음)
 
+## 공개 (인증 불필요)
+
+| Method | Path | 설명 |
+|---|---|---|
+| GET | `/health` | 상태 확인 |
+| GET | `/connect` (= `/ai`, `/llms.txt`) | AI 에이전트용 자기 연동 안내 (markdown) |
+| GET | `/SKILL.md` | AI 사용 지침 |
+| GET | `/api/public/config` | `{app, signup_enabled, signup_code_required, categories[]}` |
+| POST | `/api/public/requests` | `{name*, email, category_id, note, signup_code?}` → 201 `{id, claim_code(1회 표시), status}` |
+| GET | `/api/public/requests/:claim_code` | `{status: pending|approved|rejected, claimed, decision_note, ...}` |
+| POST | `/api/public/requests/:claim_code/claim` | 승인된 신청의 토큰 1회 수령 → `{token, user_id, name}` (409: 대기/거절/이미 수령) |
+
 ## 공통
 
 | Method | Path | 설명 |
 |---|---|---|
-| GET | `/health` | 상태 확인 (인증 불필요) |
 | GET | `/api/me` | 내 정보·소속·내 프로젝트·단계 정의·앱 설정 |
 | GET | `/api/categories` | 내 소속 카테고리 (관리자: 전체) |
 | GET | `/api/categories/:id` | 카테고리 상세: `category, members[], projects[], activity[], review_queue[], my_role` |
@@ -60,15 +71,33 @@
 | PATCH | `/api/tasks/:id` | 위 필드 (done → `done_at` 기록) |
 | DELETE | `/api/tasks/:id` | 생성자·프로젝트 소유자·리드·관리자 |
 
+## 팀 로비 · 가입
+
+| Method | Path | Body / 설명 |
+|---|---|---|
+| GET | `/api/lobby` | 활성 팀 전체: `id, name, description, join_policy(open|approval|closed), member_count, lead_names, member_names, active_projects, entries_7d, last_activity_at, my_role, my_request_status` |
+| POST | `/api/lobby/:id/join` | `{message}` → open: `{joined:true}` / approval: `{pending:true, request_id}` / closed: 403 |
+| DELETE | `/api/lobby/:id/join` | 대기 중 요청 취소 또는 탈퇴 (진행 중 내 프로젝트가 있으면 400) |
+| GET | `/api/join-requests?category_id=&status=` | 리드(자기 팀)·관리자(전체) |
+| POST | `/api/join-requests/:id/approve` | `{note, role: member|lead}` (리드·관리자) |
+| POST | `/api/join-requests/:id/reject` | `{note}` |
+
 ## 관리자 (`role=admin` 필요)
+
+| Method | Path | Body / 설명 |
+|---|---|---|
+| GET | `/api/admin/requests?status=pending|approved|rejected|all` | 토큰 발급 신청 목록 |
+| POST | `/api/admin/requests/:id/approve` | `{name, id, email, note, category_id, role: member|lead, decision_note}` → 계정 생성 `{request_id, user}` |
+| POST | `/api/admin/requests/:id/reject` | `{reason}` |
+| DELETE | `/api/admin/requests/:id` | 처리된 신청 기록 삭제 |
 
 | Method | Path | Body / 설명 |
 |---|---|---|
 | GET | `/api/admin/overview` | `counts, by_stage, by_category[], per_user[], daily_activity[], review_queue[], deadlines[]` |
 | GET | `/api/admin/activity?category_id=&actor_id=&limit=&before=` | 활동 로그 |
 | GET | `/api/admin/categories?all=1` | 보관 포함 |
-| POST | `/api/admin/categories` | `{name*, description, color, id}` |
-| PATCH | `/api/admin/categories/:id` | `{name, description, color, archived: bool}` |
+| POST | `/api/admin/categories` | `{name*, description, color, id, join_policy: open|approval|closed}` |
+| PATCH | `/api/admin/categories/:id` | `{name, description, color, archived: bool, join_policy}` |
 | GET | `/api/admin/users` | 사용자 + `memberships[], token_count, active_tokens, project_count, entry_count, last_entry_at` |
 | POST | `/api/admin/users` | `{name*, id, email, role: admin|member, note, categories: ["cat"] | [{category_id, role: lead|member}], issue_token: bool}` → `{user, token?, token_hint?}` |
 | PATCH | `/api/admin/users/:id` | `{name, email, role, note, disabled: bool, categories(전체 교체)}` |

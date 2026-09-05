@@ -10,7 +10,7 @@
     "directory": "./public",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api", "/api/*", "/mcp", "/mcp/*", "/health", "/SKILL.md", "/skill", "/skill.md", "/mcp.json"]
+    "run_worker_first": ["/api", "/api/*", "/mcp", "/mcp/*", "/health", "/SKILL.md", "/skill", "/skill.md", "/mcp.json", "/connect", "/connect.md", "/ai", "/llms.txt"]
   },
   // SKILL.md 를 문자열 모듈로 임포트 (src/skill.ts)
   "rules": [{ "type": "Text", "globs": ["**/*.md"], "fallthrough": true }],
@@ -29,9 +29,12 @@
     "ORG_SUB": "Global Business & Technology",
     "ORG_MARK": "GBT",
     // 날짜 기본값 계산용 타임존
-    "APP_TZ": "Asia/Seoul"
+    "APP_TZ": "Asia/Seoul",
+    // 공개 토큰 발급 신청 페이지(/#/apply) 허용 여부. "false" 면 관리자 직접 등록만 가능
+    "SIGNUP_ENABLED": "true"
   },
   "observability": { "enabled": true }
   // 비밀값(소스에 두지 않음):
   //   wrangler secret put ADMIN_TOKEN   # 최초 관리자 토큰(부트스트랩). DB 관리자 생성 후 삭제 가능
+  //   wrangler secret put SIGNUP_CODE   # (선택) 발급 신청 시 입력해야 하는 신청 코드 (스팸 방지)
 }

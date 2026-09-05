@@ -8,6 +8,10 @@ export interface Env {
   APP_TZ: string;
   /** 최초 관리자(부트스트랩) 토큰. DB 에 관리자를 만든 뒤 제거 가능. */
   ADMIN_TOKEN?: string;
+  /** 공개 발급 신청 허용 여부 ("false" 면 신청 페이지 비활성) */
+  SIGNUP_ENABLED?: string;
+  /** 설정 시 신청 폼에 이 코드를 입력해야 함 (스팸 방지, secret 권장) */
+  SIGNUP_CODE?: string;
 }
 
 export type GlobalRole = "admin" | "member";

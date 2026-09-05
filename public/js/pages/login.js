@@ -23,6 +23,10 @@ export function render({ onLogin, error }) {
   return h("div.wrap.narrow", h("div.login",
     h("div.hero", h("div.eyebrow", "Research Note"), h("h1", "연구노트"), h("p.sub", "논문 진행을 날짜별로 기록하고, 같은 팀과 검토하며, AI 도구로 자동 기록하는 연구실 노트")),
     h("div.card", form),
-    h("p.small.muted", { style: { marginTop: "16px" } }, "토큰이 없다면 연구책임자에게 요청하세요. AI 도구(Claude Code 등) 연동은 로그인 후 [설정]에서 안내합니다."),
+    h("div.grid.c2", { style: { marginTop: "16px" } },
+      h("a.card.hover.pad-s", { href: "#/apply" }, h("b", "토큰이 없나요?"), h("div.small.muted", "발급 신청 → 관리자 승인 → 여기서 토큰 수령")),
+      h("a.card.hover.pad-s", { href: "#/connect" }, h("b", "AI에게 맡기기"), h("div.small.muted", "주소 하나 주면 AI가 신청·MCP 등록·스킬 설치까지")),
+    ),
+    h("p.small.muted", { style: { marginTop: "12px" } }, "이미 신청했다면 ", h("a", { href: "#/claim" }, "수령 코드로 상태 확인"), "."),
   ));
 }

@@ -7,6 +7,8 @@ import * as T from "./services/tasks";
 import * as A from "./services/admin";
 import * as F from "./services/feed";
 import * as R from "./services/report";
+import * as S from "./services/signup";
+import * as TM from "./services/teams";
 
 type Handler = (req: Request, env: Env, ctx: AuthContext, params: Record<string, string>, url: URL) => Promise<Response>;
 
@@ -18,6 +20,8 @@ interface Route {
 }
 
 const routes: Route[] = [];
+type PublicHandler = (req: Request, env: Env, params: Record<string, string>, url: URL) => Promise<Response>;
+const publicRoutes: { method: string; pattern: RegExp; keys: string[]; handler: PublicHandler }[] = [];
 
 function add(method: string, path: string, handler: Handler) {
   const keys: string[] = [];
@@ -32,7 +36,19 @@ function add(method: string, path: string, handler: Handler) {
   routes.push({ method, pattern, keys, handler });
 }
 
+function addPublic(method: string, path: string, handler: PublicHandler) {
+  const keys: string[] = [];
+  const pattern = new RegExp("^" + path.replace(/\//g, "\\/").replace(/:(\w+)/g, (_m, k) => { keys.push(k); return "([^\\/]+)"; }) + "$");
+  publicRoutes.push({ method, pattern, keys, handler });
+}
+
 const q = (url: URL, k: string) => url.searchParams.get(k) ?? undefined;
+
+// ---------- 공개 (인증 불필요): 발급 신청 ----------
+addPublic("GET", "/api/public/config", async (_r, env) => json(await S.publicConfig(env)));
+addPublic("POST", "/api/public/requests", async (req, env) => json(await S.createRequest(env, await readJson(req, 16 * 1024)), 201));
+addPublic("GET", "/api/public/requests/:claim", async (_r, env, p) => json(await S.requestStatus(env, p.claim)));
+addPublic("POST", "/api/public/requests/:claim/claim", async (_r, env, p) => json(await S.claimToken(env, p.claim)));
 
 type ReportResult = { type: "json"; data: unknown } | { type: "md"; text: string; title?: string } | { type: "html"; html: string; title?: string };
 
@@ -115,6 +131,23 @@ add("DELETE", "/api/tasks/:id", async (_r, env, ctx, p) => {
   return json({ ok: true });
 });
 
+// ---------- 팀 로비 / 가입 ----------
+add("GET", "/api/lobby", async (_r, env, ctx) => json(await TM.lobby(env, ctx)));
+add("POST", "/api/lobby/:id/join", async (req, env, ctx, p) => {
+  const b = await readJson<{ message?: unknown }>(req);
+  return json(await TM.joinTeam(env, ctx, p.id, b.message));
+});
+add("DELETE", "/api/lobby/:id/join", async (_r, env, ctx, p) => json(await TM.leaveTeam(env, ctx, p.id)));
+add("GET", "/api/join-requests", async (_r, env, ctx, _p, url) => json(await TM.listJoinRequests(env, ctx, { category_id: q(url, "category_id"), status: q(url, "status") })));
+add("POST", "/api/join-requests/:id/approve", async (req, env, ctx, p) => {
+  const b = await readJson<{ note?: unknown; role?: unknown }>(req);
+  return json(await TM.decideJoinRequest(env, ctx, p.id, true, b.note, b.role ?? "member"));
+});
+add("POST", "/api/join-requests/:id/reject", async (req, env, ctx, p) => {
+  const b = await readJson<{ note?: unknown }>(req);
+  return json(await TM.decideJoinRequest(env, ctx, p.id, false, b.note));
+});
+
 // ---------- 피드 / 검색 ----------
 add("GET", "/api/feed", async (_r, env, ctx, _p, url) => json(await F.feed(env, ctx, { category_id: q(url, "category_id"), project_id: q(url, "project_id"), limit: q(url, "limit"), before: q(url, "before") })));
 add("GET", "/api/search", async (_r, env, ctx, _p, url) => json(await F.search(env, ctx, q(url, "q"), q(url, "category_id"), q(url, "limit"))));
@@ -148,12 +181,37 @@ add("POST", "/api/admin/tokens/:id/revoke", admin(async (_r, env, ctx, p) => {
   return json({ ok: true });
 }));
 
+add("GET", "/api/admin/requests", admin(async (_r, env, _c, _p, url) => json(await S.listRequests(env, q(url, "status") || "pending"))));
+add("POST", "/api/admin/requests/:id/approve", admin(async (req, env, ctx, p) => json(await S.approveRequest(env, ctx, p.id, await readJson(req)))));
+add("POST", "/api/admin/requests/:id/reject", admin(async (req, env, ctx, p) => {
+  const b = await readJson<{ reason?: unknown }>(req);
+  return json(await S.rejectRequest(env, ctx, p.id, b.reason));
+}));
+add("DELETE", "/api/admin/requests/:id", admin(async (_r, env, _c, p) => json(await S.deleteRequest(env, p.id))));
+
 // ---------- 디스패치 ----------
 export async function handleApi(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/+$/, "") || "/";
   const method = request.method.toUpperCase();
   let matchedPath = false;
+  for (const r of publicRoutes) {
+    const m = r.pattern.exec(path);
+    if (!m) continue;
+    matchedPath = true;
+    if (r.method !== method) continue;
+    const params: Record<string, string> = {};
+    try {
+      r.keys.forEach((k, i) => (params[k] = decodeURIComponent(m[i + 1])));
+    } catch {
+      return json({ error: "bad_request", message: "경로 인코딩이 올바르지 않습니다" }, 400);
+    }
+    try {
+      return await r.handler(request, env, params, url);
+    } catch (err) {
+      return errorResponse(err);
+    }
+  }
   for (const r of routes) {
     const m = r.pattern.exec(path);
     if (!m) continue;

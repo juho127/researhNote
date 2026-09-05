@@ -18,6 +18,7 @@ import * as E from "./services/entries";
 import * as T from "./services/tasks";
 import * as F from "./services/feed";
 import * as R from "./services/report";
+import * as TM from "./services/teams";
 import { SKILL_MD, SKILL_SHORT } from "./skill";
 
 const SERVER_NAME = "research-note";
@@ -367,6 +368,30 @@ const TOOLS: ToolDef[] = [
         for (const e of d.review_queue) L.push(`- ${e.date} ${e.title} (${e.id}) · ${e.project_title} · ${e.author_name}`);
       }
       return { text: L.join("\n"), data: d };
+    },
+  },
+  {
+    name: "list_teams",
+    title: "팀 로비 (전체 팀 목록·가입 상태)",
+    description: "연구실의 모든 팀(카테고리)과 구성원·활동 요약, 나의 소속/가입 요청 상태를 본다. 소속 팀이 없거나 다른 팀에 참여하고 싶을 때.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    handler: async (env, ctx) => {
+      const rows = await TM.lobby(env, ctx);
+      const pol: Record<string, string> = { open: "즉시 가입", approval: "승인 후 가입", closed: "초대만" };
+      const text = rows.length
+        ? rows.map((t) => `- ${t.name} (${t.id}) · ${pol[t.join_policy] ?? t.join_policy} · 구성원 ${t.member_count}${t.lead_names ? ` · 리드 ${t.lead_names}` : ""} · 진행 중 ${t.active_projects} · 이번 주 기록 ${t.entries_7d}${t.my_role ? ` · 나: ${t.my_role}` : t.my_request_status === "pending" ? " · 나: 가입 요청 대기" : ""}${t.description ? `\n  ${t.description.slice(0, 120)}` : ""}`).join("\n")
+        : "팀 없음";
+      return { text, data: { teams: rows } };
+    },
+  },
+  {
+    name: "join_team",
+    title: "팀 가입 / 가입 요청",
+    description: "팀에 가입한다. 정책이 open 이면 즉시 가입, approval 이면 리드 승인 요청이 만들어진다. 사용자가 명시적으로 원할 때만 호출.",
+    inputSchema: { type: "object", properties: { category_id: idProp("팀(카테고리) ID"), message: { type: "string", description: "리드에게 보낼 메시지 (선택)" } }, required: ["category_id"], additionalProperties: false },
+    handler: async (env, ctx, a) => {
+      const r = await TM.joinTeam(env, ctx, String(a.category_id), a.message);
+      return { text: r.joined ? `${r.category_name} 에 가입했습니다` : `${r.category_name} 가입 요청을 보냈습니다 (리드 승인 대기)`, data: r };
     },
   },
   {

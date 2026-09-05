@@ -2,6 +2,8 @@
 
 연구노트는 **원격 MCP 서버(Streamable HTTP, stateless)** 를 `/mcp` 에 내장합니다. 연구원 PC 에 설치할 것은 없습니다. AI 도구에 URL 과 개인 토큰만 등록하면 됩니다.
 
+**가장 쉬운 방법**: AI 도구에 `https://<URL>/connect 를 읽고 연구노트를 연동해줘` 라고 말하세요. `/connect` 는 에이전트용 안내(markdown)로, 토큰 확인 → 발급 신청/수령 → MCP 등록 → 스킬 저장 → 검증 절차와 정확한 명령이 들어 있습니다.
+
 - Endpoint: `POST https://<배포URL>/mcp`
 - 인증: `Authorization: Bearer rn_...` (개인 토큰, 웹 로그인과 동일)
 - 프로토콜: MCP `2025-06-18` / `2025-03-26` / `2024-11-05` (JSON-RPC 2.0, 단건·배치, 알림은 202)
@@ -92,6 +94,8 @@ http_headers = { Authorization = "Bearer rn_xxx" }
 | `set_review` | `entry_id, status, note?` | 검토 상태 |
 | `team_feed` | `category_id?, limit?` | 팀 활동 |
 | `team_overview` | `category_id` | 구성원·프로젝트·검토 대기 |
+| `list_teams` | – | 팀 로비: 전체 팀·가입 정책·내 상태 |
+| `join_team` | `category_id, message?` | 가입(open) 또는 가입 요청(approval) |
 | `search` | `q, category_id?` | 검색 |
 | `get_report` | `project_id, from?, to?, format?` | 보고서 마크다운 |
 

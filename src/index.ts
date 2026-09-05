@@ -3,6 +3,7 @@ import { CORS_HEADERS, json, text } from "./lib/http";
 import { handleApi } from "./routes";
 import { handleMcp } from "./mcp";
 import { SKILL_MD } from "./skill";
+import { connectMarkdown } from "./connect";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -18,6 +19,11 @@ export default {
     if (path === "/mcp" || path.startsWith("/mcp/")) return handleMcp(request, env);
 
     if (path === "/SKILL.md" || path === "/skill" || path === "/skill.md") return text(SKILL_MD, 200, "text/markdown; charset=utf-8");
+
+    // AI 에이전트용 자기 연동 안내 (사용자가 AI 에게 이 URL 만 주면 됨)
+    if (path === "/connect" || path === "/ai" || path === "/llms.txt" || path === "/connect.md") {
+      return text(await connectMarkdown(env, `${url.protocol}//${url.host}`), 200, "text/markdown; charset=utf-8");
+    }
 
     if (path === "/mcp.json") {
       // 클라이언트 설정 샘플 (토큰은 사용자가 채움)

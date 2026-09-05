@@ -12,6 +12,7 @@ export interface CategoryRow {
   name: string;
   description: string;
   color: string;
+  join_policy: string;
   created_at: string;
   archived_at: string | null;
   member_count?: number;
@@ -32,7 +33,9 @@ export async function listCategories(env: Env, includeArchived = false): Promise
   return rs.results ?? [];
 }
 
-export async function createCategory(env: Env, ctx: AuthContext, input: { name?: unknown; description?: unknown; color?: unknown; id?: unknown }): Promise<CategoryRow> {
+const JOIN_POLICIES = ["open", "approval", "closed"] as const;
+
+export async function createCategory(env: Env, ctx: AuthContext, input: { name?: unknown; description?: unknown; color?: unknown; id?: unknown; join_policy?: unknown }): Promise<CategoryRow> {
   const name = str(input.name, 100);
   if (!name) bad("name 이 필요합니다");
   const dup = await env.DB.prepare(`SELECT id FROM categories WHERE name = ?`).bind(name).first();
@@ -41,15 +44,16 @@ export async function createCategory(env: Env, ctx: AuthContext, input: { name?:
   const clash = await env.DB.prepare(`SELECT id FROM categories WHERE id = ?`).bind(id).first();
   if (clash) id = `${id}-${newId("c").slice(2, 6)}`;
   const at = nowIso();
+  const policy = input.join_policy === undefined || input.join_policy === null ? "approval" : oneOf(input.join_policy, JOIN_POLICIES, "join_policy");
   await env.DB
-    .prepare(`INSERT INTO categories (id, name, description, color, created_at) VALUES (?, ?, ?, ?, ?)`)
-    .bind(id, name, str(input.description, 1000), str(input.color, 20), at)
+    .prepare(`INSERT INTO categories (id, name, description, color, join_policy, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+    .bind(id, name, str(input.description, 1000), str(input.color, 20), policy, at)
     .run();
   await logActivity(env, { actor_id: ctx.user.id, category_id: id, action: "category.create", target_id: id, summary: name, source: ctx.source });
   return (await env.DB.prepare(`SELECT * FROM categories WHERE id = ?`).bind(id).first<CategoryRow>())!;
 }
 
-export async function updateCategory(env: Env, ctx: AuthContext, id: string, input: { name?: unknown; description?: unknown; color?: unknown; archived?: unknown }): Promise<CategoryRow> {
+export async function updateCategory(env: Env, ctx: AuthContext, id: string, input: { name?: unknown; description?: unknown; color?: unknown; archived?: unknown; join_policy?: unknown }): Promise<CategoryRow> {
   const c = await env.DB.prepare(`SELECT * FROM categories WHERE id = ?`).bind(id).first<CategoryRow>();
   if (!c) bad("카테고리를 찾을 수 없습니다");
   const sets: string[] = [];
@@ -69,6 +73,10 @@ export async function updateCategory(env: Env, ctx: AuthContext, id: string, inp
   if (input.color !== undefined) {
     sets.push("color = ?");
     params.push(str(input.color, 20));
+  }
+  if (input.join_policy !== undefined && input.join_policy !== null) {
+    sets.push("join_policy = ?");
+    params.push(oneOf(input.join_policy, JOIN_POLICIES, "join_policy"));
   }
   if (input.archived !== undefined && input.archived !== null) {
     sets.push("archived_at = ?");
@@ -323,7 +331,9 @@ export async function overview(env: Env) {
         (SELECT COUNT(*) FROM entries WHERE created_at >= ?) AS entries_30d,
         (SELECT COUNT(*) FROM entries WHERE source = 'mcp') AS entries_mcp,
         (SELECT COUNT(*) FROM entries WHERE review_status = 'requested') AS review_requested,
-        (SELECT COUNT(*) FROM tokens WHERE revoked_at IS NULL) AS active_tokens`).bind(d7, d30),
+        (SELECT COUNT(*) FROM tokens WHERE revoked_at IS NULL) AS active_tokens,
+        (SELECT COUNT(*) FROM signup_requests WHERE status = 'pending') AS pending_requests,
+        (SELECT COUNT(*) FROM join_requests WHERE status = 'pending') AS pending_joins`).bind(d7, d30),
     env.DB.prepare(`SELECT stage, COUNT(*) AS n FROM projects WHERE status = 'active' GROUP BY stage`),
     env.DB.prepare(`
       SELECT c.id, c.name,

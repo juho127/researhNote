@@ -49,10 +49,12 @@ npm run setup               # D1 생성 → 마이그레이션 → 배포 → �
 `setup` 이 끝나면 **배포 URL** 과 **관리자 토큰**이 출력됩니다. 토큰은 해시로만 저장되므로 이때 복사해 두세요.
 
 1. 배포 URL 에 접속해 관리자 토큰으로 로그인
-2. **[관리자] → 카테고리** 에서 연구 그룹 생성 (예: "LLM 응용")
-3. **[관리자] → 연구원** 에서 연구원 등록: 이름 · 소속 카테고리(리드 여부) · "등록과 동시에 토큰 발급"
-4. 표시된 토큰과 접속 URL 을 연구원에게 전달 ("안내문 복사" 버튼)
-5. 연구원은 로그인 후 **[설정]** 에서 자기 AI 도구 연동 명령을 복사해 실행
+2. **[관리자] → 카테고리** 에서 연구 그룹(팀) 생성 (예: "LLM 응용"). 가입 정책 선택: 승인 후 가입(기본) / 즉시 가입 / 초대만
+3. 연구원 온보딩은 둘 중 하나
+   - **자율 신청(권장)**: 연구원에게 `https://<배포URL>/#/apply` 를 알려준다 → 신청 → **[관리자] → 발급 신청** 에서 승인 → 연구원이 수령 코드로 토큰을 직접 1회 수령
+   - **직접 등록**: **[관리자] → 연구원** 에서 등록 + "등록과 동시에 토큰 발급" → 토큰 전달
+4. 연구원은 **[팀 로비]** 에서 다른 팀에도 가입(정책에 따라 즉시 또는 리드 승인)할 수 있다
+5. AI 도구 연동은 **[설정]** 의 명령을 복사하거나, AI 에게 `https://<배포URL>/connect` 주소만 주면 AI 가 스스로 연동한다
 
 워커 이름을 바꾸려면 `npm run setup -- --name my-lab-notes --db my-lab-notes-db`. 기관명·단계 라벨 커스터마이즈는 [커스터마이즈](#커스터마이즈) 참고.
 
@@ -60,6 +62,8 @@ npm run setup               # D1 생성 → 마이그레이션 → 배포 → �
 
 ## 연구원 사용 흐름
 
+0. **토큰 받기**: `/#/apply` 에서 발급 신청 → 관리자 승인 → 수령 코드로 토큰 1회 수령(`/#/claim/<코드>`). 또는 AI 에게 `/connect` 주소를 주면 신청부터 연동까지 대신 진행.
+0'. **팀 로비**: 전체 팀 목록·구성원·활동을 보고 가입(즉시/승인). 여러 팀에 속할 수 있고, 리드는 팀 페이지 [구성원] 에서 가입 요청을 승인한다.
 1. **홈**: "오늘의 기록" 폼에 지금 한 일을 바로 기록. 내 프로젝트 카드(단계 진행 바·마지막 기록·할 일 수)와 팀 활동 피드.
 2. **팀 페이지**: 단계별 칸반 보드 / 목록 / 구성원 / 검토 대기 / 활동. 팀원 프로젝트를 열어 기록을 읽고 코멘트.
 3. **프로젝트 페이지**
@@ -75,6 +79,10 @@ npm run setup               # D1 생성 → 마이그레이션 → 배포 → �
 ## AI 도구 연동 (웹 MCP)
 
 이 서버는 **원격 MCP 서버**를 내장합니다. 연구원 컴퓨터에 아무것도 설치하지 않고, AI 도구에 URL 과 토큰만 등록하면 됩니다.
+
+### 가장 쉬운 방법: AI 에게 주소 하나
+
+`https://<배포URL>/connect` 는 에이전트가 읽는 연동 안내(markdown)입니다. AI 도구에 "이 주소를 읽고 연구노트를 연동해줘" 라고 하면 AI 가 토큰 확인 → (없으면) 발급 신청·승인 확인·수령 → MCP 등록 → 스킬 저장 → `whoami` 검증까지 수행합니다. `/llms.txt`, `/ai` 도 같은 문서입니다.
 
 ### Claude Code (권장)
 
@@ -108,7 +116,7 @@ Cursor · Claude Desktop(mcp-remote) · Codex CLI · Gemini CLI 설정 예시는
 
 ### MCP 도구 목록
 
-`whoami` `list_projects` `get_project` `create_project` `update_project` `log_progress` `list_entries` `get_entry` `update_entry` `update_stage` `list_tasks` `add_task` `update_task` `add_comment` `set_review` `team_feed` `team_overview` `search` `get_report` + 프롬프트 `log_today` `weekly_review` `research_note_guide` + 리소스 `research-note://guide`, `research-note://me`, `research-note://project/{id}`
+`whoami` `list_projects` `get_project` `create_project` `update_project` `log_progress` `list_entries` `get_entry` `update_entry` `update_stage` `list_tasks` `add_task` `update_task` `add_comment` `set_review` `team_feed` `team_overview` `list_teams` `join_team` `search` `get_report` + 프롬프트 `log_today` `weekly_review` `research_note_guide` + 리소스 `research-note://guide`, `research-note://me`, `research-note://project/{id}`
 
 ## 보고서
 
@@ -132,6 +140,18 @@ Cursor · Claude Desktop(mcp-remote) · Codex CLI · Gemini CLI 설정 예시는
 | 카테고리·연구원·토큰 관리 | ✓ | ✗ | ✗ | ✗ | ✗ |
 
 토큰은 `rn_` 접두 40자, 서버에는 SHA-256 해시만 저장. 회수 즉시 웹·MCP 접근 차단. 관리자 페이지에서 "마지막 사용" 을 볼 수 있습니다.
+
+### 온보딩·가입 흐름
+
+| 흐름 | 누가 | 어떻게 |
+|---|---|---|
+| 토큰 발급 신청 | 신규 연구원 | `/#/apply` 에서 이름·이메일·희망 팀 입력 → 수령 코드 보관 → 관리자 승인 후 `/#/claim/<코드>` 에서 토큰 1회 수령 (관리자는 토큰을 보지 않음) |
+| 신청 승인/거절 | 관리자 | [관리자] → 발급 신청. 승인 시 계정·소속 생성, 역할(구성원/리드) 지정 |
+| 팀 가입 | 기존 연구원 | [팀 로비] → 가입. 팀의 가입 정책이 즉시/승인/초대만 중 무엇인지에 따라 즉시 가입 또는 요청 |
+| 가입 요청 승인 | 팀 리드 또는 관리자 | 팀 페이지 [구성원] 또는 [관리자] → 발급 신청 하단 |
+| 탈퇴 | 본인 | [팀 로비] → 탈퇴 (진행 중인 내 프로젝트가 있으면 불가, 유일한 리드는 불가) |
+
+스팸 방지: `npx wrangler secret put SIGNUP_CODE` 로 신청 코드를 두면 신청 폼에 코드 입력이 필요합니다. 공개 신청을 끄려면 `wrangler.jsonc` 의 `SIGNUP_ENABLED` 를 `"false"` 로.
 
 ## 로컬 개발
 
