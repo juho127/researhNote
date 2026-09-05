@@ -19,7 +19,7 @@ export async function render(container, categoryId, query) {
       h("div", h("h1", cat.name), cat.description ? h("p.sub", cat.description) : null),
       h("div.row",
         h("button.btn", { onclick: () => reportDialog(categoryId, cat.name) }, "팀 보고서"),
-        h("button.btn.primary", { onclick: () => newProjectDialog(me, categoryId) }, "+ 새 프로젝트"),
+        h("button.btn.primary", { onclick: () => newProjectDialog(me, categoryId, cat.name) }, "+ 새 프로젝트"),
       ),
     ),
     h("div.row", { style: { marginTop: "14px" } }, viewSeg, h("span.spacer"),

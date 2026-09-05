@@ -119,8 +119,11 @@ export async function render(container) {
 
 function daysAgoStr(n) { return new Date(Date.now() - n * 864e5).toISOString().slice(0, 10); }
 
-export function newProjectDialog(me, categoryId) {
-  const cats = me.memberships;
+export function newProjectDialog(me, categoryId, categoryName) {
+  const cats = me.memberships.slice();
+  // 관리자가 비구성원 카테고리의 팀 페이지에서 만들 때: 그 카테고리를 선택지에 추가
+  if (categoryId && !cats.some((m) => m.category_id === categoryId)) cats.unshift({ category_id: categoryId, category_name: categoryName || categoryId });
+  if (!cats.length) { toast("소속 카테고리가 없어 프로젝트를 만들 수 없습니다", true); return; }
   const cat = select(cats.map((m) => ({ value: m.category_id, label: m.category_name })), { value: categoryId || cats[0]?.category_id });
   const title = input({ placeholder: "논문 제목 (가제)", maxlength: 200 });
   const summary = textarea({ placeholder: "연구 질문 · 가설 · 기여점을 한두 문장으로", rows: 3 });

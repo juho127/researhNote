@@ -46,11 +46,11 @@ export async function getProjectForRead(env: Env, ctx: AuthContext, id: string):
   return p;
 }
 
-/** 프로젝트 편집: 관리자 / 소유자 / 카테고리 리드 */
+/** 프로젝트 편집: 관리자 / 카테고리 리드 / (현재 구성원인) 소유자 */
 export async function getProjectForWrite(env: Env, ctx: AuthContext, id: string): Promise<ProjectRow> {
   const p = await getProject(env, id);
   const r = categoryRole(ctx, p.category_id);
-  if (r === "admin" || r === "lead" || p.owner_id === ctx.user.id) return p;
+  if (r === "admin" || r === "lead" || (r && p.owner_id === ctx.user.id)) return p;
   forbidden("프로젝트 소유자·카테고리 리드·관리자만 수정할 수 있습니다");
 }
 

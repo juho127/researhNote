@@ -1,7 +1,7 @@
 import type { AuthContext, Env } from "../env";
 import { STAGES, STAGE_LABELS, STAGE_HINTS } from "../env";
 import { requireCategoryMember } from "../lib/auth";
-import { clampInt, str } from "../lib/http";
+import { clampInt, str, notFound } from "../lib/http";
 import { daysAgoIso } from "../lib/time";
 import { listActivity } from "./admin";
 import { listProjects } from "./projects";
@@ -31,6 +31,7 @@ export async function me(env: Env, ctx: AuthContext) {
 export async function categoryDetail(env: Env, ctx: AuthContext, categoryId: string) {
   requireCategoryMember(ctx, categoryId);
   const cat = await env.DB.prepare(`SELECT * FROM categories WHERE id = ?`).bind(categoryId).first();
+  if (!cat) notFound("카테고리를 찾을 수 없습니다");
   const members = await env.DB
     .prepare(
       `SELECT u.id, u.name, u.email, m.role, u.last_seen_at,
@@ -65,7 +66,7 @@ export async function feed(env: Env, ctx: AuthContext, opts: { category_id?: str
 
 /** 통합 검색: 프로젝트 + 기록 */
 export async function search(env: Env, ctx: AuthContext, q: unknown, categoryId?: string, limit?: unknown) {
-  const query = str(q, 100);
+  const query = str(q, 200);
   if (!query) return { projects: [], entries: [] };
   const lim = clampInt(limit, 20, 1, 100);
   const [projects, entries] = await Promise.all([

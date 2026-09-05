@@ -3,7 +3,8 @@ import { sha256Hex } from "./id";
 import { nowIso } from "./time";
 import { unauthorized, forbidden } from "./http";
 
-const BOOTSTRAP_ADMIN_ID = "admin";
+/** ADMIN_TOKEN 시크릿 전용 사용자 id (UI 에서 만드는 일반 사용자와 충돌하지 않도록 예약) */
+const BOOTSTRAP_ADMIN_ID = "bootstrap-admin";
 
 function extractToken(request: Request): string {
   const auth = request.headers.get("authorization") || "";
@@ -33,7 +34,7 @@ async function ensureBootstrapAdmin(db: D1Database): Promise<User> {
   const at = nowIso();
   await db
     .prepare(`INSERT INTO users (id, name, email, role, note, created_at) VALUES (?, ?, '', 'admin', '부트스트랩 관리자(ADMIN_TOKEN)', ?)`)
-    .bind(BOOTSTRAP_ADMIN_ID, "관리자", at)
+    .bind(BOOTSTRAP_ADMIN_ID, "부트스트랩 관리자", at)
     .run();
   return (await db.prepare(`SELECT * FROM users WHERE id = ?`).bind(BOOTSTRAP_ADMIN_ID).first<User>())!;
 }
@@ -49,7 +50,9 @@ export async function authenticate(request: Request, env: Env, source: AuthConte
 
   if (env.ADMIN_TOKEN && token === env.ADMIN_TOKEN) {
     const user = await ensureBootstrapAdmin(env.DB);
-    return { user, memberships: await loadMemberships(env.DB, user.id), tokenId: null, isAdmin: true, source };
+    // 관리자 화면에서 bootstrap-admin 을 비활성화하면 시크릿 토큰도 막힌다
+    if (user.disabled_at) unauthorized("부트스트랩 관리자가 비활성화되어 있습니다");
+    return { user: { ...user, role: "admin" }, memberships: await loadMemberships(env.DB, user.id), tokenId: null, isAdmin: true, source };
   }
 
   const hash = await sha256Hex(token);

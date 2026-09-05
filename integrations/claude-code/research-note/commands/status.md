@@ -1,7 +1,7 @@
 ---
 description: 내 논문 프로젝트와 팀 상황을 연구노트에서 읽어 요약한다
 argument-hint: [프로젝트 ID 또는 카테고리 ID]
-allowed-tools: mcp__research-note__*
+allowed-tools: mcp__research-note__*, mcp__plugin_research-note_research-note__*
 ---
 
 연구노트에서 현재 상황을 읽어 간단히 요약하세요.

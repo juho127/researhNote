@@ -39,7 +39,7 @@
 | Method | Path | Body / Query |
 |---|---|---|
 | GET | `/api/entries` | `?project_id= &category_id= &mine=1 &author_id= &stage= &since= &until= &review_status= &q= &limit= &offset= &brief=1` |
-| GET | `/api/projects/:id/entries` | 위와 동일 (project 고정) |
+| GET | `/api/projects/:id/entries` | `?stage= &since= &until= &review_status= &limit= &offset=` (project 고정, 본문 전체 포함) |
 | POST | `/api/projects/:id/entries` | `{title*, content(md), stage(기본: 프로젝트 현재 단계), date(기본: 오늘 KST), review_status: none|requested}` → 201 |
 | GET | `/api/entries/:id` | 상세 + `comments[]` |
 | PATCH | `/api/entries/:id` | `{title, content, stage, date, review_status}` (작성자·관리자) |
@@ -58,7 +58,7 @@
 | GET | `/api/projects/:id/tasks?status=` | |
 | POST | `/api/projects/:id/tasks` | `{title*, status, assignee_id, due, stage}` |
 | PATCH | `/api/tasks/:id` | 위 필드 (done → `done_at` 기록) |
-| DELETE | `/api/tasks/:id` | 생성자·담당자·리드·관리자 |
+| DELETE | `/api/tasks/:id` | 생성자·프로젝트 소유자·리드·관리자 |
 
 ## 관리자 (`role=admin` 필요)
 

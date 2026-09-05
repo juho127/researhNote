@@ -1,7 +1,7 @@
 ---
 description: 프로젝트 진행 보고서(마크다운)를 받아 주간 보고 초안을 만든다
 argument-hint: <프로젝트 ID> [from=YYYY-MM-DD] [to=YYYY-MM-DD]
-allowed-tools: mcp__research-note__*
+allowed-tools: mcp__research-note__*, mcp__plugin_research-note_research-note__*
 ---
 
 `get_report` 로 "$ARGUMENTS" 에 지정된 프로젝트의 보고서를 받아 주간 보고 초안을 작성하세요.

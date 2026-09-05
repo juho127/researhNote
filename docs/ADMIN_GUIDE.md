@@ -5,8 +5,8 @@
 README 의 [빠른 시작](../README.md#빠른-시작-연구책임자-약-10분) 참고. 요약: `npm install` → `npx wrangler login` → `npm run setup`.
 
 - `setup` 은 D1 생성 → `wrangler.jsonc` 에 `database_id` 기록 → 마이그레이션 → 배포 → 관리자 토큰 발급을 순서대로 수행합니다. 각 단계는 재실행해도 안전합니다.
-- 관리자 토큰을 잃어버렸으면 `npm run bootstrap -- --name "이름" --id 아이디` 로 관리자 사용자를 재보장하고 새 토큰을 발급합니다.
-- 비상용: `npx wrangler secret put ADMIN_TOKEN` 으로 넣은 값은 항상 관리자로 인증됩니다 (`users.id = 'admin'`). 운영 안정화 후 `npx wrangler secret delete ADMIN_TOKEN` 권장.
+- 관리자 토큰을 잃어버렸으면 `npm run bootstrap -- --name "이름" --id juho` 처럼 실행해 관리자 사용자를 재보장하고 새 토큰을 발급합니다 (`--id` 는 영문·숫자·하이픈만, 생략 시 `admin`).
+- 비상용: `npx wrangler secret put ADMIN_TOKEN` 으로 넣은 값은 항상 관리자로 인증됩니다 (예약 사용자 `bootstrap-admin`, 관리자 화면에서 비활성화하면 차단). 운영 안정화 후 `npx wrangler secret delete ADMIN_TOKEN` 권장.
 
 ## 2. 조직 구성
 

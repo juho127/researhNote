@@ -1,6 +1,6 @@
 import type { AuthContext, Env, Stage } from "../env";
 import { REVIEW_STATUSES, isStage } from "../env";
-import { bad, forbidden, isDateStr, oneOf, str, clampInt } from "../lib/http";
+import { bad, forbidden, notFound, isDateStr, oneOf, str, strLimited, clampInt } from "../lib/http";
 import { newId } from "../lib/id";
 import { nowIso, todayIn } from "../lib/time";
 import { categoryRole, requireCategoryMember, canReview } from "../lib/auth";
@@ -85,9 +85,10 @@ export async function listEntries(env: Env, ctx: AuthContext, opts: EntryListOpt
     params.push(oneOf(opts.review_status, REVIEW_STATUSES, "review_status"));
   }
   if (opts.q) {
-    where.push("(e.title LIKE ? OR e.content LIKE ?)");
-    const like = `%${opts.q}%`;
-    params.push(like, like);
+    // LIKE 패턴 길이 제한(D1)을 피하기 위해 instr 사용
+    const needle = str(opts.q, 200).toLowerCase();
+    where.push("(instr(lower(e.title), ?) > 0 OR instr(lower(e.content), ?) > 0)");
+    params.push(needle, needle);
   }
   const limit = clampInt(opts.limit, 100, 1, 500);
   const offset = clampInt(opts.offset, 0, 0, 100_000);
@@ -106,7 +107,7 @@ export async function listEntries(env: Env, ctx: AuthContext, opts: EntryListOpt
 
 export async function getEntryFull(env: Env, ctx: AuthContext, id: string): Promise<EntryFull> {
   const row = await env.DB.prepare(`${ENTRY_SELECT} WHERE e.id = ?`).bind(id).first<EntryFull>();
-  if (!row) bad("기록을 찾을 수 없습니다");
+  if (!row) notFound("기록을 찾을 수 없습니다");
   if (!categoryRole(ctx, row.category_id!)) forbidden("이 기록이 속한 카테고리의 구성원이 아닙니다");
   const cs = await env.DB
     .prepare(`SELECT c.*, u.name AS author_name FROM comments c JOIN users u ON u.id = c.author_id WHERE c.entry_id = ? ORDER BY c.created_at`)
@@ -130,7 +131,8 @@ export async function createEntry(env: Env, ctx: AuthContext, projectId: string,
   // 기록 작성: 소유자 / 리드 / 관리자. 같은 카테고리 구성원은 코멘트로 참여.
   const role = categoryRole(ctx, p.category_id);
   if (!(role === "admin" || role === "lead" || p.owner_id === ctx.user.id)) forbidden("기록은 프로젝트 소유자·리드·관리자만 작성할 수 있습니다 (팀원은 코멘트로 참여)");
-  const title = str(input.title, 200);
+  if (p.status === "archived") forbidden("보관된 프로젝트에는 기록할 수 없습니다. 먼저 상태를 되돌리세요");
+  const title = strLimited(input.title, 200, "title");
   if (!title) bad("title 이 필요합니다");
   const date = input.date === undefined || input.date === null || input.date === "" ? todayIn(env.APP_TZ) : (isDateStr(input.date) ? input.date : bad("date 는 YYYY-MM-DD 형식"));
   let stage: Stage = p.stage;
@@ -138,8 +140,8 @@ export async function createEntry(env: Env, ctx: AuthContext, projectId: string,
     if (!isStage(input.stage)) bad("stage 값이 올바르지 않습니다");
     stage = input.stage;
   }
-  const content = str(input.content, 200_000);
-  const review = input.review_status === undefined ? "none" : oneOf(input.review_status, REVIEW_STATUSES, "review_status");
+  const content = strLimited(input.content, 200_000, "content");
+  const review = input.review_status === undefined || input.review_status === null ? "none" : oneOf(input.review_status, ["none", "requested"] as const, "review_status (생성 시)");
   const id = newId("ent");
   const at = nowIso();
   const source = ctx.source;
@@ -148,7 +150,7 @@ export async function createEntry(env: Env, ctx: AuthContext, projectId: string,
       `INSERT INTO entries (id, project_id, author_id, date, stage, title, content, source, review_status, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .bind(id, projectId, ctx.user.id, date, stage, title, content, source, review === "approved" || review === "changes_requested" ? "none" : review, at, at)
+    .bind(id, projectId, ctx.user.id, date, stage, title, content, source, review, at, at)
     .run();
   // 해당 단계가 todo 였다면 doing 으로
   await env.DB
@@ -163,21 +165,29 @@ export async function createEntry(env: Env, ctx: AuthContext, projectId: string,
   return getEntryFull(env, ctx, id);
 }
 
+const REVIEW_ACTION: Record<string, string> = { requested: "review.request", approved: "review.approve", changes_requested: "review.changes", none: "review.clear" };
+
 export async function updateEntry(env: Env, ctx: AuthContext, id: string, input: EntryInput): Promise<EntryFull> {
   const e = await getEntry(env, id);
   const p = await getProject(env, e.project_id);
-  if (!(ctx.isAdmin || e.author_id === ctx.user.id)) forbidden("기록은 작성자·관리자만 수정할 수 있습니다");
+  // 작성자라도 현재 카테고리 구성원이어야 한다 (탈퇴자 차단)
+  if (!(ctx.isAdmin || (e.author_id === ctx.user.id && categoryRole(ctx, p.category_id)))) forbidden("기록은 작성자·관리자만 수정할 수 있습니다");
   const sets: string[] = [];
   const params: unknown[] = [];
+  let contentChanged = false;
+  if (p.status === "archived" && !ctx.isAdmin) forbidden("보관된 프로젝트의 기록은 수정할 수 없습니다");
   if (input.title !== undefined) {
-    const t = str(input.title, 200);
+    const t = strLimited(input.title, 200, "title");
     if (!t) bad("title 은 비울 수 없습니다");
+    if (t !== e.title) contentChanged = true;
     sets.push("title = ?");
     params.push(t);
   }
   if (input.content !== undefined) {
+    const c = strLimited(input.content, 200_000, "content");
+    if (c !== e.content) contentChanged = true;
     sets.push("content = ?");
-    params.push(str(input.content, 200_000));
+    params.push(c);
   }
   if (input.date !== undefined) {
     if (!isDateStr(input.date)) bad("date 는 YYYY-MM-DD 형식");
@@ -189,26 +199,36 @@ export async function updateEntry(env: Env, ctx: AuthContext, id: string, input:
     sets.push("stage = ?");
     params.push(input.stage);
   }
+  let reviewChange: string | null = null;
   if (input.review_status !== undefined) {
     const rs = oneOf(input.review_status, REVIEW_STATUSES, "review_status");
     // 작성자는 검토 요청/취소만, 승인·수정요청은 검토자
     if ((rs === "approved" || rs === "changes_requested") && !canReview(ctx, p.category_id)) forbidden("승인·수정요청은 리드·관리자만 가능합니다");
+    if (rs !== e.review_status) reviewChange = rs;
+  } else if (contentChanged && e.review_status === "approved") {
+    // 승인 후 내용이 바뀌면 승인은 무효 — 재검토 필요 상태로 되돌린다
+    reviewChange = "none";
+  }
+  if (reviewChange !== null) {
     sets.push("review_status = ?");
-    params.push(rs);
+    params.push(reviewChange);
   }
   if (!sets.length) bad("변경할 필드가 없습니다");
   sets.push("updated_at = ?");
   params.push(nowIso(), id);
   await env.DB.prepare(`UPDATE entries SET ${sets.join(", ")} WHERE id = ?`).bind(...params).run();
   await touchProject(env, e.project_id);
-  await logActivity(env, { actor_id: ctx.user.id, category_id: p.category_id, project_id: e.project_id, action: input.review_status !== undefined ? "review.request" : "entry.update", target_id: id, summary: str(input.title, 200) || e.title, source: ctx.source });
+  await logActivity(env, { actor_id: ctx.user.id, category_id: p.category_id, project_id: e.project_id, action: "entry.update", target_id: id, summary: str(input.title, 200) || e.title, source: ctx.source });
+  if (reviewChange !== null) {
+    await logActivity(env, { actor_id: ctx.user.id, category_id: p.category_id, project_id: e.project_id, action: REVIEW_ACTION[reviewChange], target_id: id, summary: input.review_status === undefined ? `${e.title} (수정으로 승인 해제)` : e.title, source: ctx.source });
+  }
   return getEntryFull(env, ctx, id);
 }
 
 export async function deleteEntry(env: Env, ctx: AuthContext, id: string): Promise<void> {
   const e = await getEntry(env, id);
   const p = await getProject(env, e.project_id);
-  if (!(ctx.isAdmin || e.author_id === ctx.user.id)) forbidden("기록은 작성자·관리자만 삭제할 수 있습니다");
+  if (!(ctx.isAdmin || (e.author_id === ctx.user.id && categoryRole(ctx, p.category_id)))) forbidden("기록은 작성자·관리자만 삭제할 수 있습니다");
   await env.DB.prepare(`DELETE FROM entries WHERE id = ?`).bind(id).run();
   await touchProject(env, e.project_id);
   await logActivity(env, { actor_id: ctx.user.id, category_id: p.category_id, project_id: e.project_id, action: "entry.delete", target_id: id, summary: e.title, source: ctx.source });
@@ -224,10 +244,14 @@ export async function setReviewStatus(env: Env, ctx: AuthContext, id: string, st
   const author = e.author_id === ctx.user.id;
   if ((rs === "approved" || rs === "changes_requested") && !reviewer) forbidden("승인·수정요청은 리드·관리자만 가능합니다");
   if ((rs === "requested" || rs === "none") && !(author || reviewer)) forbidden("검토 요청은 작성자·리드·관리자만 가능합니다");
+  // 작성자는 리드의 판정(승인/수정요청)을 지울 수 없다 — 자기 요청 취소만 가능
+  if (rs === "none" && !reviewer && e.review_status !== "requested") forbidden("리드의 검토 판정은 작성자가 해제할 수 없습니다");
+  const noteText = str(note, 5000);
+  // 같은 상태를 다시 설정하면(코멘트 없이) 중복 코멘트·활동을 만들지 않는다
+  if (rs === e.review_status && !noteText) return getEntryFull(env, ctx, id);
   const at = nowIso();
   await env.DB.prepare(`UPDATE entries SET review_status = ?, updated_at = ? WHERE id = ?`).bind(rs, at, id).run();
-  const noteText = str(note, 5000);
-  if (noteText || rs === "approved" || rs === "changes_requested") {
+  if (noteText || ((rs === "approved" || rs === "changes_requested") && rs !== e.review_status)) {
     const kind = rs === "approved" ? "approve" : rs === "changes_requested" ? "request_changes" : "comment";
     await env.DB
       .prepare(`INSERT INTO comments (id, entry_id, author_id, content, kind, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
@@ -244,7 +268,7 @@ export async function addComment(env: Env, ctx: AuthContext, entryId: string, co
   const e = await getEntry(env, entryId);
   const p = await getProject(env, e.project_id);
   if (!categoryRole(ctx, p.category_id)) forbidden("이 카테고리의 구성원만 코멘트할 수 있습니다");
-  const text = str(content, 20_000);
+  const text = strLimited(content, 20_000, "content");
   if (!text) bad("content 가 필요합니다");
   const k = oneOf(kind ?? "comment", ["comment", "approve", "request_changes"] as const, "kind");
   if (k !== "comment" && !canReview(ctx, p.category_id)) forbidden("승인·수정요청은 리드·관리자만 가능합니다");
@@ -264,7 +288,9 @@ export async function addComment(env: Env, ctx: AuthContext, entryId: string, co
 
 export async function deleteComment(env: Env, ctx: AuthContext, id: string): Promise<void> {
   const c = await env.DB.prepare(`SELECT * FROM comments WHERE id = ?`).bind(id).first<CommentRow>();
-  if (!c) bad("코멘트를 찾을 수 없습니다");
-  if (!(ctx.isAdmin || c.author_id === ctx.user.id)) forbidden("코멘트는 작성자·관리자만 삭제할 수 있습니다");
+  if (!c) notFound("코멘트를 찾을 수 없습니다");
+  const e = await getEntry(env, c.entry_id);
+  const p = await getProject(env, e.project_id);
+  if (!(ctx.isAdmin || (c.author_id === ctx.user.id && categoryRole(ctx, p.category_id)))) forbidden("코멘트는 작성자·관리자만 삭제할 수 있습니다");
   await env.DB.prepare(`DELETE FROM comments WHERE id = ?`).bind(id).run();
 }

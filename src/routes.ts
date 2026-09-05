@@ -160,9 +160,14 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
     matchedPath = true;
     if (r.method !== method) continue;
     const params: Record<string, string> = {};
-    r.keys.forEach((k, i) => (params[k] = decodeURIComponent(m[i + 1])));
     try {
-      const ctx = await authenticate(request, env, request.headers.get("x-client") === "mcp" ? "mcp" : request.headers.get("x-client") === "web" ? "web" : "api");
+      r.keys.forEach((k, i) => (params[k] = decodeURIComponent(m[i + 1])));
+    } catch {
+      return json({ error: "bad_request", message: "경로 인코딩이 올바르지 않습니다" }, 400);
+    }
+    try {
+      // source: 'mcp' 는 /mcp 엔드포인트에서만 부여 (REST 는 web | api)
+      const ctx = await authenticate(request, env, request.headers.get("x-client") === "web" ? "web" : "api");
       return await r.handler(request, env, ctx, params, url);
     } catch (err) {
       return errorResponse(err);
@@ -176,8 +181,9 @@ export function errorResponse(err: unknown): Response {
   if (err instanceof HttpError) return json({ error: err.code, message: err.message }, err.status);
   const msg = err instanceof Error ? err.message : String(err);
   console.error("unhandled", msg, err instanceof Error ? err.stack : "");
-  // D1 오류 메시지는 대개 안전하나, 내부 경로 노출을 피하기 위해 요약만 전달
-  return json({ error: "internal", message: msg.length > 300 ? msg.slice(0, 300) : msg }, 500);
+  // 내부 오류 원문(D1 메시지·스택)은 로그에만 남기고 응답은 요약만
+  const hint = /D1_ERROR|SQLITE/.test(msg) ? "데이터베이스 오류 (스키마 마이그레이션이 적용됐는지 확인하세요)" : "서버 내부 오류";
+  return json({ error: "internal", message: hint }, 500);
 }
 
 function notFoundResponse(path: string): Response {

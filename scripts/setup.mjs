@@ -77,9 +77,20 @@ console.log("\n▶ 3/5 스키마 마이그레이션 (원격)");
 run(["d1", "migrations", "apply", "DB", "--remote"]);
 
 // 4) 배포
+//    신규 계정은 workers.dev 서브도메인 등록 프롬프트가 뜨므로, 캡처 모드가 실패하면 대화형으로 한 번 더 실행한다.
 console.log("\n▶ 4/5 워커 배포");
-const deployOut = run(["deploy"], { capture: true });
-process.stdout.write(deployOut);
+let deployOut = "";
+{
+  const r = spawnSync(npx, ["wrangler", "deploy"], { stdio: ["inherit", "pipe", "inherit"], encoding: "utf-8", shell: isWin });
+  deployOut = r.stdout ?? "";
+  process.stdout.write(deployOut);
+  if (r.status !== 0) {
+    console.log("\n(비대화식 배포 실패 — workers.dev 서브도메인 등록 등 확인이 필요할 수 있어 대화형으로 다시 실행합니다)");
+    run(["deploy"]); // 대화형: 프롬프트에 답할 수 있음. 실패하면 여기서 종료
+    deployOut = run(["deploy"], { capture: true }); // URL 파싱용 재배포(빠름)
+    process.stdout.write(deployOut);
+  }
+}
 const urlMatch = deployOut.match(/https:\/\/[^\s]+workers\.dev/);
 const url = urlMatch ? urlMatch[0] : "(배포 URL 은 wrangler deploy 출력 참고)";
 

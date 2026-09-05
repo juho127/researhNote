@@ -1,6 +1,6 @@
 import type { AuthContext, Env } from "../env";
 import { TASK_STATUSES, isStage } from "../env";
-import { bad, forbidden, isDateStr, oneOf, str } from "../lib/http";
+import { bad, forbidden, isDateStr, oneOf, str, strLimited } from "../lib/http";
 import { newId } from "../lib/id";
 import { nowIso } from "../lib/time";
 import { categoryRole } from "../lib/auth";
@@ -38,8 +38,21 @@ async function canTouchTasks(env: Env, ctx: AuthContext, projectId: string) {
   const p = await getProject(env, projectId);
   const role = categoryRole(ctx, p.category_id);
   if (!role) forbidden("이 카테고리의 구성원이 아닙니다");
+  if (p.status === "archived" && role !== "admin") forbidden("보관된 프로젝트의 할 일은 수정할 수 없습니다");
   // 같은 카테고리 구성원은 누구나 할 일을 제안/갱신할 수 있게 한다 (팀 협업)
   return p;
+}
+
+/** 담당자: 해당 카테고리 구성원 또는 전역 관리자(활성) */
+async function assertAssignable(env: Env, userId: string, categoryId: string): Promise<void> {
+  const ok = await env.DB
+    .prepare(
+      `SELECT 1 AS x FROM users u WHERE u.id = ? AND u.disabled_at IS NULL
+         AND (u.role = 'admin' OR EXISTS (SELECT 1 FROM memberships m WHERE m.user_id = u.id AND m.category_id = ?))`
+    )
+    .bind(userId, categoryId)
+    .first();
+  if (!ok) bad("assignee_id 사용자가 이 카테고리의 구성원(또는 관리자)이 아닙니다");
 }
 
 function normDue(v: unknown): string | null {
@@ -50,14 +63,11 @@ function normDue(v: unknown): string | null {
 
 export async function createTask(env: Env, ctx: AuthContext, projectId: string, input: TaskInput): Promise<TaskRow> {
   const p = await canTouchTasks(env, ctx, projectId);
-  const title = str(input.title, 300);
+  const title = strLimited(input.title, 300, "title");
   if (!title) bad("title 이 필요합니다");
-  const status = input.status === undefined ? "todo" : oneOf(input.status, TASK_STATUSES, "status");
+  const status = input.status === undefined || input.status === null ? "todo" : oneOf(input.status, TASK_STATUSES, "status");
   const assignee = input.assignee_id ? str(input.assignee_id, 100) : null;
-  if (assignee) {
-    const ok = await env.DB.prepare(`SELECT 1 AS x FROM memberships WHERE user_id = ? AND category_id = ?`).bind(assignee, p.category_id).first();
-    if (!ok && assignee !== "admin") bad("assignee_id 사용자가 이 카테고리의 구성원이 아닙니다");
-  }
+  if (assignee) await assertAssignable(env, assignee, p.category_id);
   let stage: string | null = null;
   if (input.stage !== undefined && input.stage !== null && input.stage !== "") {
     if (!isStage(input.stage)) bad("stage 값이 올바르지 않습니다");
@@ -99,10 +109,7 @@ export async function updateTask(env: Env, ctx: AuthContext, id: string, input: 
   }
   if (input.assignee_id !== undefined) {
     const a = input.assignee_id ? str(input.assignee_id, 100) : null;
-    if (a) {
-      const ok = await env.DB.prepare(`SELECT 1 AS x FROM memberships WHERE user_id = ? AND category_id = ?`).bind(a, p.category_id).first();
-      if (!ok && a !== "admin") bad("assignee_id 사용자가 이 카테고리의 구성원이 아닙니다");
-    }
+    if (a) await assertAssignable(env, a, p.category_id);
     sets.push("assignee_id = ?");
     params.push(a);
     changes.push("담당자");

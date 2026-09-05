@@ -1,7 +1,7 @@
 ---
 description: 팀원의 검토 대기 기록을 읽고 코멘트 초안을 만든다 (리드/팀원용)
 argument-hint: [카테고리 ID 또는 기록 ID]
-allowed-tools: mcp__research-note__*
+allowed-tools: mcp__research-note__*, mcp__plugin_research-note_research-note__*
 ---
 
 연구노트의 검토 대기 기록을 검토하세요.

@@ -1,0 +1,14 @@
+- generic [ref=e4]:
+  - generic [ref=e5]:
+    - generic [ref=e6]: Research Note
+    - heading "연구노트" [level=1] [ref=e7]
+    - paragraph [ref=e8]: 논문 진행을 날짜별로 기록하고, 같은 팀과 검토하며, AI 도구로 자동 기록하는 연구실 노트
+  - generic [ref=e10]:
+    - generic [ref=e11]:
+      - generic [ref=e12]: 개인 접근 토큰
+      - textbox "개인 접근 토큰 관리자(연구책임자)가 발급한 토큰을 붙여넣으세요. 토큰은 이 브라우저에만 저장됩니다." [ref=e13]:
+        - /placeholder: rn_…
+      - generic [ref=e14]: 관리자(연구책임자)가 발급한 토큰을 붙여넣으세요. 토큰은 이 브라우저에만 저장됩니다.
+    - paragraph [ref=e15]
+    - button "들어가기" [ref=e17] [cursor=pointer]
+  - paragraph [ref=e18]: 토큰이 없다면 연구책임자에게 요청하세요. AI 도구(Claude Code 등) 연동은 로그인 후 [설정]에서 안내합니다.

@@ -19,7 +19,7 @@ async function api(token, method, path, body, client = "web") {
 const d = (daysAgo) => new Date(Date.now() - daysAgo * 864e5).toISOString().slice(0, 10);
 
 (async () => {
-  const existing = await api(ADMIN, "GET", "/api/admin/categories");
+  const existing = await api(ADMIN, "GET", "/api/admin/categories?all=1");
   if (existing.some((c) => c.name === "LLM 응용")) { console.log("이미 데모 데이터가 있습니다 (카테고리 'LLM 응용' 존재). 종료."); return; }
 
   const llm = await api(ADMIN, "POST", "/api/admin/categories", { name: "LLM 응용", id: "llm", description: "대규모 언어모델을 금융·산업 문제에 적용하는 연구 그룹. RAG, 에이전트, 평가 방법론." });

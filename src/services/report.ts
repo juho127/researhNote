@@ -26,11 +26,23 @@ interface ProjectReportData {
   to?: string;
 }
 
+/** 500건 페이지를 이어 붙여 전체 기록을 가져온다 (최대 REPORT_MAX 건) */
+const REPORT_MAX = 5000;
+async function listAllEntries(env: Env, ctx: AuthContext, base: { project_id?: string; category_id?: string; since?: string; until?: string }): Promise<EntryFull[]> {
+  const all: EntryFull[] = [];
+  for (let offset = 0; offset < REPORT_MAX; offset += 500) {
+    const page = await listEntries(env, ctx, { ...base, limit: 500, offset });
+    all.push(...page);
+    if (page.length < 500) break;
+  }
+  return all;
+}
+
 async function collectProject(env: Env, ctx: AuthContext, projectId: string, opts: ReportOpts): Promise<ProjectReportData> {
   const project = await getProjectDetail(env, ctx, projectId);
   if (opts.from && !isDateStr(opts.from)) bad("from 은 YYYY-MM-DD 형식");
   if (opts.to && !isDateStr(opts.to)) bad("to 는 YYYY-MM-DD 형식");
-  const entries = await listEntries(env, ctx, { project_id: projectId, since: opts.from, until: opts.to, limit: 500 });
+  const entries = await listAllEntries(env, ctx, { project_id: projectId, since: opts.from, until: opts.to });
   entries.reverse(); // 오래된 순
   const comments: Record<string, CommentRow[]> = {};
   if (opts.include_comments !== false && entries.length) {
@@ -246,7 +258,7 @@ export async function categoryReport(env: Env, ctx: AuthContext, categoryId: str
   if (opts.from && !isDateStr(opts.from)) bad("from 은 YYYY-MM-DD 형식");
   if (opts.to && !isDateStr(opts.to)) bad("to 는 YYYY-MM-DD 형식");
   const projects = (await listProjects(env, ctx, { category_id: categoryId, status: "all", limit: 300 })).filter((p) => p.status !== "archived");
-  const entries = await listEntries(env, ctx, { category_id: categoryId, since: opts.from, until: opts.to, limit: 500 });
+  const entries = await listAllEntries(env, ctx, { category_id: categoryId, since: opts.from, until: opts.to });
   const byProject = new Map<string, EntryFull[]>();
   for (const e of entries) (byProject.get(e.project_id) ?? byProject.set(e.project_id, []).get(e.project_id)!).push(e);
   const tz = env.APP_TZ || "Asia/Seoul";

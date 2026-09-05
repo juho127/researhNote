@@ -1,7 +1,7 @@
 ---
 description: 이 세션에서 한 연구 작업을 연구노트에 날짜별 기록으로 남긴다
 argument-hint: [프로젝트 ID 또는 제목 일부] [메모]
-allowed-tools: mcp__research-note__*
+allowed-tools: mcp__research-note__*, mcp__plugin_research-note_research-note__*
 ---
 
 연구노트 스킬(research-note)의 절차를 따라 이 세션의 연구 작업을 기록하세요.

@@ -1,6 +1,6 @@
 import type { AuthContext, Env, Stage } from "../env";
 import { STAGES, PROJECT_STATUSES, STAGE_STATUSES, isStage } from "../env";
-import { bad, isDateStr, oneOf, str, clampInt } from "../lib/http";
+import { bad, forbidden, isDateStr, oneOf, str, strLimited, bool, clampInt } from "../lib/http";
 import { newId } from "../lib/id";
 import { nowIso } from "../lib/time";
 import { categoryRole, requireCategoryMember } from "../lib/auth";
@@ -62,9 +62,9 @@ export async function listProjects(env: Env, ctx: AuthContext, opts: ListOpts = 
     params.push(status);
   }
   if (opts.q) {
-    where.push("(p.title LIKE ? OR p.summary LIKE ? OR p.tags LIKE ?)");
-    const like = `%${opts.q}%`;
-    params.push(like, like, like);
+    const needle = str(opts.q, 200).toLowerCase();
+    where.push("(instr(lower(p.title), ?) > 0 OR instr(lower(p.summary), ?) > 0 OR instr(lower(p.tags), ?) > 0)");
+    params.push(needle, needle, needle);
   }
   const limit = clampInt(opts.limit, 200, 1, 500);
   const sql = `${CARD_SELECT}
@@ -196,7 +196,7 @@ export async function createProject(env: Env, ctx: AuthContext, input: ProjectIn
   const cat = await env.DB.prepare(`SELECT id FROM categories WHERE id = ? AND archived_at IS NULL`).bind(categoryId).first();
   if (!cat) bad("category_id 가 올바르지 않습니다");
   const role = requireCategoryMember(ctx, categoryId);
-  const title = str(input.title, 200);
+  const title = strLimited(input.title, 200, "title");
   if (!title) bad("title 이 필요합니다");
   let stage: Stage = "planning";
   if (input.stage !== undefined) {
@@ -218,7 +218,7 @@ export async function createProject(env: Env, ctx: AuthContext, input: ProjectIn
       `INSERT INTO projects (id, category_id, owner_id, title, summary, stage, status, target_venue, deadline, tags, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`
     )
-    .bind(id, categoryId, ownerId, title, str(input.summary, 2000), stage, str(input.target_venue, 200), deadline, normTags(input.tags), at, at)
+    .bind(id, categoryId, ownerId, title, strLimited(input.summary, 2000, "summary"), stage, str(input.target_venue, 200), deadline, normTags(input.tags), at, at)
     .run();
   await ensureStageRows(env, id);
   await env.DB
@@ -231,11 +231,13 @@ export async function createProject(env: Env, ctx: AuthContext, input: ProjectIn
 
 export async function updateProject(env: Env, ctx: AuthContext, id: string, input: ProjectInput): Promise<ProjectDetail> {
   const p = await getProjectForWrite(env, ctx, id);
+  // 보관된 프로젝트는 상태 복구(status) 외의 수정을 막는다
+  if (p.status === "archived" && !ctx.isAdmin && Object.keys(input).some((k) => k !== "status")) forbidden("보관된 프로젝트는 상태를 되돌린 뒤 수정할 수 있습니다");
   const sets: string[] = [];
   const params: unknown[] = [];
   const changes: string[] = [];
   if (input.title !== undefined) {
-    const t = str(input.title, 200);
+    const t = strLimited(input.title, 200, "title");
     if (!t) bad("title 은 비울 수 없습니다");
     sets.push("title = ?");
     params.push(t);
@@ -243,7 +245,7 @@ export async function updateProject(env: Env, ctx: AuthContext, id: string, inpu
   }
   if (input.summary !== undefined) {
     sets.push("summary = ?");
-    params.push(str(input.summary, 2000));
+    params.push(strLimited(input.summary, 2000, "summary"));
     changes.push("요약");
   }
   if (input.stage !== undefined) {
@@ -283,20 +285,33 @@ export async function updateProject(env: Env, ctx: AuthContext, id: string, inpu
     params.push(uid);
     changes.push("소유자");
   }
+  let movedTo: string | null = null;
   if (input.category_id !== undefined && str(input.category_id) !== p.category_id) {
     if (!ctx.isAdmin) bad("카테고리 이동은 관리자만 가능합니다");
     const cid = str(input.category_id, 100);
     const ok = await env.DB.prepare(`SELECT 1 AS x FROM categories WHERE id = ? AND archived_at IS NULL`).bind(cid).first();
     if (!ok) bad("category_id 가 올바르지 않습니다");
+    // 소유자(변경 후 소유자 포함)가 새 카테고리 구성원이어야 접근 가능
+    const newOwner = input.owner_id !== undefined ? str(input.owner_id, 100) : p.owner_id;
+    const ownerOk = await env.DB.prepare(`SELECT 1 AS x FROM memberships WHERE user_id = ? AND category_id = ?`).bind(newOwner, cid).first();
+    if (!ownerOk) bad("프로젝트 소유자가 이동할 카테고리의 구성원이 아닙니다. 먼저 소속을 추가하거나 owner_id 를 함께 변경하세요");
     sets.push("category_id = ?");
     params.push(cid);
     changes.push("카테고리");
+    movedTo = cid;
   }
   if (!sets.length) bad("변경할 필드가 없습니다");
   const at = nowIso();
   sets.push("updated_at = ?");
   params.push(at, id);
   await env.DB.prepare(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`).bind(...params).run();
+  if (movedTo) {
+    // 활동 이력도 새 카테고리로, 새 카테고리 비구성원 담당자는 해제
+    await env.DB.batch([
+      env.DB.prepare(`UPDATE activity SET category_id = ? WHERE project_id = ?`).bind(movedTo, id),
+      env.DB.prepare(`UPDATE tasks SET assignee_id = NULL WHERE project_id = ? AND assignee_id IS NOT NULL AND assignee_id NOT IN (SELECT user_id FROM memberships WHERE category_id = ?)`).bind(id, movedTo),
+    ]);
+  }
   if (input.stage !== undefined && isStage(input.stage)) {
     // 현재 단계로 지정된 단계가 todo 면 doing 으로
     await env.DB
@@ -316,30 +331,37 @@ export async function updateStage(
   input: { status?: unknown; summary?: unknown; set_current?: unknown }
 ): Promise<ProjectDetail> {
   const p = await getProjectForWrite(env, ctx, id);
+  if (p.status === "archived" && !ctx.isAdmin) forbidden("보관된 프로젝트는 수정할 수 없습니다. 먼저 상태를 되돌리세요");
   if (!isStage(stage)) bad("stage 값이 올바르지 않습니다");
   await ensureStageRows(env, id);
   const sets: string[] = [];
   const params: unknown[] = [];
   const changes: string[] = [];
-  if (input.status !== undefined) {
+  if (input.status !== undefined && input.status !== null) {
     const s = oneOf(input.status, STAGE_STATUSES, "status");
     sets.push("status = ?");
     params.push(s);
     changes.push(`상태→${s}`);
   }
-  if (input.summary !== undefined) {
+  if (input.summary !== undefined && input.summary !== null) {
     sets.push("summary = ?");
-    params.push(str(input.summary, 100_000));
+    params.push(strLimited(input.summary, 100_000, "summary"));
     changes.push("정리 갱신");
   }
-  if (!sets.length && !input.set_current) bad("변경할 필드가 없습니다");
+  const setCurrent = bool(input.set_current) && p.stage !== stage;
+  if (!sets.length && !setCurrent) bad("변경할 필드가 없습니다");
   const at = nowIso();
+  if (setCurrent && (input.status === undefined || input.status === null)) {
+    // 현재 단계로 지정하면서 상태를 안 줬으면 '예정' → '진행 중'
+    sets.push("status = CASE WHEN status = 'todo' THEN 'doing' ELSE status END");
+    changes.push("진행 중");
+  }
   if (sets.length) {
     sets.push("updated_at = ?", "updated_by = ?");
     params.push(at, ctx.user.id, id, stage);
     await env.DB.prepare(`UPDATE project_stages SET ${sets.join(", ")} WHERE project_id = ? AND stage = ?`).bind(...params).run();
   }
-  if (input.set_current || (input.status === "doing" && p.stage !== stage)) {
+  if (setCurrent) {
     await env.DB.prepare(`UPDATE projects SET stage = ?, updated_at = ? WHERE id = ?`).bind(stage, at, id).run();
     changes.push("현재 단계로 지정");
   } else {

@@ -11,7 +11,7 @@ export function render({ onLogin, error }) {
       if (!t) { err.textContent = "토큰을 입력하세요"; return; }
       btn.disabled = true; err.textContent = "";
       setToken(t);
-      try { await loadMe(); location.hash = "#/"; onLogin(); }
+      try { await loadMe({ noRedirect: true }); location.hash = "#/"; onLogin(); }
       catch (ex) { setToken(null); state.me = null; err.textContent = ex.status === 401 ? ex.message : `연결 실패: ${ex.message}`; if (ex.status !== 401) errToast(ex); }
       finally { btn.disabled = false; }
     },

@@ -44,7 +44,7 @@ const sql = [
 const sqlFile = join(tmpdir(), `rn-bootstrap-${process.pid}.sql`);
 writeFileSync(sqlFile, sql + "\n", "utf-8");
 const wrangler = process.platform === "win32" ? "npx.cmd" : "npx";
-const r = spawnSync(wrangler, ["wrangler", "d1", "execute", "DB", local ? "--local" : "--remote", "--file", sqlFile], { stdio: ["ignore", "pipe", "pipe"], encoding: "utf-8", shell: process.platform === "win32" });
+const r = spawnSync(wrangler, ["wrangler", "d1", "execute", "DB", local ? "--local" : "--remote", "--file", process.platform === "win32" ? `"${sqlFile}"` : sqlFile], { stdio: ["ignore", "pipe", "pipe"], encoding: "utf-8", shell: process.platform === "win32" });
 try { unlinkSync(sqlFile); } catch {}
 if (r.status !== 0) {
   console.error(r.stdout || "");

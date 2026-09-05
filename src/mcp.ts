@@ -62,6 +62,7 @@ function projectSummaryMd(p: P.ProjectDetail): string {
     L.push("", `## 할 일`);
     for (const t of p.tasks) L.push(`- [${t.status === "done" ? "x" : " "}] (${t.id}) ${t.title}${t.assignee_name ? ` @${t.assignee_name}` : ""}${t.due ? ` · ${t.due}` : ""}${t.status === "doing" ? " · 진행 중" : ""}`);
   }
+  if (p.members.length) L.push("", `## 팀 구성원 (assignee_id / owner_id 로 사용)`, ...p.members.map((m) => `- ${m.name} (${m.id}${m.role === "lead" ? ", 리드" : ""})`));
   if (p.recent_entries.length) {
     L.push("", `## 최근 기록`);
     for (const e of p.recent_entries) L.push(`- ${e.date} [${STAGE_LABELS[e.stage]}] ${e.title} (${e.id}, ${e.author_name}${e.review_status !== "none" ? `, ${e.review_status}` : ""}${e.comment_count ? `, 코멘트 ${e.comment_count}` : ""})`);
@@ -185,7 +186,7 @@ const TOOLS: ToolDef[] = [
       additionalProperties: false,
     },
     handler: async (env, ctx, a) => {
-      const e = await E.createEntry(env, ctx, String(a.project_id), { title: a.title, content: a.content, stage: a.stage, date: a.date, review_status: a.request_review ? "requested" : undefined });
+      const e = await E.createEntry(env, ctx, String(a.project_id), { title: a.title, content: a.content, stage: a.stage, date: a.date, review_status: a.request_review === true ? "requested" : undefined });
       return { text: `기록됨: [${e.date}] ${e.title} (${e.id}) · ${STAGE_LABELS[e.stage]}${e.review_status === "requested" ? " · 검토 요청됨" : ""}`, data: e };
     },
   },
@@ -252,7 +253,7 @@ const TOOLS: ToolDef[] = [
     title: "단계별 정리 갱신 (논문 뼈대)",
     description:
       "프로젝트의 특정 단계(기획/리서치/관련기법/실험결과/논문작성/검토)의 상태(todo/doing/done)와 정리 요약(마크다운)을 갱신한다. " +
-      "정리 요약은 그 단계까지의 누적 결론 = 논문 해당 절의 뼈대. 일별 기록은 log_progress, 누적 정리는 이 도구. set_current=true 면 프로젝트의 현재 단계로 지정.",
+      "정리 요약은 그 단계까지의 누적 결론 = 논문 해당 절의 뼈대. 일별 기록은 log_progress, 누적 정리는 이 도구. 프로젝트의 현재 단계는 set_current=true 를 줄 때만 바뀐다.",
     inputSchema: {
       type: "object",
       properties: {
@@ -355,11 +356,11 @@ const TOOLS: ToolDef[] = [
   {
     name: "team_overview",
     title: "팀(카테고리) 현황",
-    description: "카테고리의 구성원·프로젝트·검토 대기 목록·최근 활동을 한 번에 본다.",
+    description: "카테고리의 구성원(사용자 ID 포함)·프로젝트·검토 대기 목록·최근 활동을 한 번에 본다.",
     inputSchema: { type: "object", properties: { category_id: idProp("카테고리 ID") }, required: ["category_id"], additionalProperties: false },
     handler: async (env, ctx, a) => {
       const d = await F.categoryDetail(env, ctx, String(a.category_id));
-      const L = [`# ${(d.category as { name: string }).name}`, `구성원: ${(d.members as { name: string; role: string }[]).map((m) => `${m.name}(${m.role})`).join(", ")}`, "", "## 프로젝트"];
+      const L = [`# ${(d.category as { name: string }).name}`, `구성원: ${(d.members as { id: string; name: string; role: string }[]).map((m) => `${m.name} (id=${m.id}, ${m.role})`).join(", ")}`, "", "## 프로젝트"];
       for (const p of d.projects) L.push(`- ${p.title} (${p.id}) · ${p.owner_name} · ${STAGE_LABELS[p.stage]} · ${p.status} · 마지막 ${p.last_entry_date ?? "-"}`);
       if (d.review_queue.length) {
         L.push("", "## 검토 대기");
@@ -392,7 +393,7 @@ const TOOLS: ToolDef[] = [
     handler: async (env, ctx, a) => {
       const r = await R.projectReport(env, ctx, String(a.project_id), a.format === "json" ? "json" : "md", { from: s(a.from), to: s(a.to) });
       if (r.type === "md") return { text: r.text };
-      if (r.type === "json") return { text: j(r.data), data: r.data };
+      if (r.type === "json") return { text: "(structuredContent 에 JSON 보고서 데이터가 있습니다)", data: r.data };
       return { text: r.html };
     },
   },
@@ -433,9 +434,35 @@ function rpcError(id: unknown, code: number, message: string, data?: unknown) {
   return { jsonrpc: "2.0", id: id ?? null, error: { code, message, ...(data !== undefined ? { data } : {}) } };
 }
 
+/** inputSchema(최상위 properties) 기준 간단 검증: required · type · enum. 오류 문자열 배열 반환 */
+function validateArgs(schema: Record<string, unknown>, args: Record<string, unknown>): string[] {
+  const errors: string[] = [];
+  const props = (schema.properties ?? {}) as Record<string, Record<string, unknown>>;
+  const required = (schema.required ?? []) as string[];
+  for (const k of required) if (args[k] === undefined || args[k] === null || args[k] === "") errors.push(`필수 인자 누락: ${k}`);
+  const typeOk = (t: string, v: unknown) =>
+    t === "string" ? typeof v === "string" : t === "boolean" ? typeof v === "boolean" : t === "integer" ? Number.isInteger(v) : t === "number" ? typeof v === "number" : t === "array" ? Array.isArray(v) : t === "null" ? v === null : t === "object" ? typeof v === "object" && v !== null : true;
+  for (const [k, v] of Object.entries(args)) {
+    const p = props[k];
+    if (!p) {
+      if (schema.additionalProperties === false) errors.push(`알 수 없는 인자: ${k}`);
+      continue;
+    }
+    if (v === undefined) continue;
+    const types = Array.isArray(p.type) ? (p.type as string[]) : p.type ? [p.type as string] : [];
+    if (types.length && !types.some((t) => typeOk(t, v))) errors.push(`${k} 는 ${types.join("|")} 이어야 합니다 (받은 값: ${JSON.stringify(v).slice(0, 60)})`);
+    if (Array.isArray(p.enum) && !(p.enum as unknown[]).includes(v)) errors.push(`${k} 값은 ${(p.enum as unknown[]).join(" | ")} 중 하나여야 합니다`);
+    if (typeof p.pattern === "string" && typeof v === "string" && !new RegExp(p.pattern).test(v)) errors.push(`${k} 형식이 올바르지 않습니다 (${p.description ?? p.pattern})`);
+  }
+  return errors;
+}
+
 async function handleOne(req: JsonRpcRequest, env: Env, ctx: AuthContext): Promise<unknown | null> {
-  const { id, method, params = {} } = req;
+  const { id, method } = req;
+  const params: Record<string, unknown> = req.params && typeof req.params === "object" ? req.params : {};
   const isNotification = id === undefined;
+  // 알림(id 없음)은 응답하지 않는다 — 규격상 실행 결과를 돌려줄 수 없으므로 상태 변경 도구도 실행하지 않는다
+  if (isNotification) return null;
   try {
     switch (method) {
       case "initialize": {
@@ -467,7 +494,9 @@ async function handleOne(req: JsonRpcRequest, env: Env, ctx: AuthContext): Promi
         const name = String(params.name ?? "");
         const tool = TOOLS.find((t) => t.name === name);
         if (!tool) return rpcError(id, -32602, `알 수 없는 도구: ${name}`);
-        const args = (params.arguments && typeof params.arguments === "object" ? params.arguments : {}) as Record<string, unknown>;
+        const args = (params.arguments && typeof params.arguments === "object" && !Array.isArray(params.arguments) ? params.arguments : {}) as Record<string, unknown>;
+        const problems = validateArgs(tool.inputSchema, args);
+        if (problems.length) return { jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `인자 오류 (${tool.name}):\n- ${problems.join("\n- ")}` }], isError: true } };
         try {
           const r = await tool.handler(env, ctx, args);
           const result: Record<string, unknown> = { content: [{ type: "text", text: r.text }] };
@@ -485,6 +514,8 @@ async function handleOne(req: JsonRpcRequest, env: Env, ctx: AuthContext): Promi
         const p = PROMPTS.find((x) => x.name === name);
         if (!p) return rpcError(id, -32602, `알 수 없는 프롬프트: ${name}`);
         const args = (params.arguments && typeof params.arguments === "object" ? params.arguments : {}) as Record<string, string>;
+        const missing = p.arguments.filter((a) => a.required && !args[a.name]).map((a) => a.name);
+        if (missing.length) return rpcError(id, -32602, `필수 인자 누락: ${missing.join(", ")}`);
         return { jsonrpc: "2.0", id, result: { description: p.description, messages: [{ role: "user", content: { type: "text", text: p.build(args) } }] } };
       }
       case "resources/list":
@@ -506,8 +537,13 @@ async function handleOne(req: JsonRpcRequest, env: Env, ctx: AuthContext): Promi
         if (uri === "research-note://me") return { jsonrpc: "2.0", id, result: { contents: [{ uri, mimeType: "application/json", text: j(await F.me(env, ctx)) }] } };
         const m = uri.match(/^research-note:\/\/project\/([^/]+)$/);
         if (m) {
-          const p = await P.getProjectDetail(env, ctx, m[1]);
-          return { jsonrpc: "2.0", id, result: { contents: [{ uri, mimeType: "text/markdown", text: projectSummaryMd(p) }] } };
+          try {
+            const p = await P.getProjectDetail(env, ctx, m[1]);
+            return { jsonrpc: "2.0", id, result: { contents: [{ uri, mimeType: "text/markdown", text: projectSummaryMd(p) }] } };
+          } catch (err) {
+            if (err instanceof HttpError && (err.status === 404 || err.status === 403)) return rpcError(id, -32002, `리소스를 찾을 수 없습니다: ${uri} (${err.message})`);
+            throw err;
+          }
         }
         return rpcError(id, -32002, `리소스를 찾을 수 없습니다: ${uri}`);
       }
@@ -544,8 +580,12 @@ export async function handleMcp(request: Request, env: Env): Promise<Response> {
   try {
     ctx = await authenticate(request, env, "mcp");
   } catch (err) {
-    const msg = err instanceof HttpError ? err.message : "unauthorized";
-    return new Response(JSON.stringify(rpcError(null, -32001, msg)), { status: 401, headers: { ...MCP_HEADERS, "WWW-Authenticate": `Bearer realm="research-note", error="invalid_token"` } });
+    if (err instanceof HttpError && err.status === 401) {
+      return new Response(JSON.stringify(rpcError(null, -32001, err.message)), { status: 401, headers: { ...MCP_HEADERS, "WWW-Authenticate": `Bearer realm="research-note", error="invalid_token"` } });
+    }
+    // 인증 중 내부 오류(D1 등)는 401 로 위장하지 않는다
+    console.error("mcp auth error", err);
+    return new Response(JSON.stringify(rpcError(null, -32603, "서버 내부 오류 (인증 처리 실패)")), { status: 500, headers: MCP_HEADERS });
   }
 
   let body: unknown;

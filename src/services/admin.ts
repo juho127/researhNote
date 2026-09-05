@@ -1,6 +1,6 @@
 import type { AuthContext, Env, User } from "../env";
 import { STAGES } from "../env";
-import { bad, oneOf, str, clampInt } from "../lib/http";
+import { bad, oneOf, str, bool, clampInt } from "../lib/http";
 import { newId, newToken, tokenHint, sha256Hex, slugify } from "../lib/id";
 import { nowIso, daysAgoIso, daysAgoDate } from "../lib/time";
 import { logActivity } from "../lib/db";
@@ -70,9 +70,9 @@ export async function updateCategory(env: Env, ctx: AuthContext, id: string, inp
     sets.push("color = ?");
     params.push(str(input.color, 20));
   }
-  if (input.archived !== undefined) {
+  if (input.archived !== undefined && input.archived !== null) {
     sets.push("archived_at = ?");
-    params.push(input.archived ? nowIso() : null);
+    params.push(bool(input.archived) ? nowIso() : null);
   }
   if (!sets.length) bad("변경할 필드가 없습니다");
   params.push(id);
@@ -142,6 +142,16 @@ function normMemberships(v: unknown): { category_id: string; role: "lead" | "mem
     .filter((x): x is { category_id: string; role: "lead" | "member" } => !!x && !!x.category_id);
 }
 
+/** 소속 목록의 category_id 가 모두 존재하는지 확인 (없으면 400) */
+async function assertCategoriesExist(env: Env, mems: { category_id: string }[]): Promise<void> {
+  const ids = [...new Set(mems.map((m) => m.category_id))];
+  if (!ids.length) return;
+  const rs = await env.DB.prepare(`SELECT id FROM categories WHERE id IN (${ids.map(() => "?").join(",")})`).bind(...ids).all<{ id: string }>();
+  const found = new Set((rs.results ?? []).map((r) => r.id));
+  const missing = ids.filter((i) => !found.has(i));
+  if (missing.length) bad(`존재하지 않는 카테고리: ${missing.join(", ")}`);
+}
+
 export async function createUser(env: Env, ctx: AuthContext, input: UserInput): Promise<{ user: UserRow; token?: string; token_hint?: string }> {
   const name = str(input.name, 100);
   if (!name) bad("name 이 필요합니다");
@@ -149,19 +159,18 @@ export async function createUser(env: Env, ctx: AuthContext, input: UserInput): 
   let id = input.id ? slugify(str(input.id, 60)) : slugify(name);
   const clash = await env.DB.prepare(`SELECT id FROM users WHERE id = ?`).bind(id).first();
   if (clash) id = `${id}-${newId("u").slice(2, 6)}`;
-  const at = nowIso();
-  await env.DB
-    .prepare(`INSERT INTO users (id, name, email, role, note, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
-    .bind(id, name, str(input.email, 200), role, str(input.note, 500), at)
-    .run();
   const mems = normMemberships(input.categories);
-  if (mems.length) {
-    await env.DB.batch(mems.map((m) => env.DB.prepare(`INSERT OR REPLACE INTO memberships (user_id, category_id, role, created_at) VALUES (?, ?, ?, ?)`).bind(id, m.category_id, m.role, at)));
-  }
+  await assertCategoriesExist(env, mems);
+  const at = nowIso();
+  // 사용자 + 소속을 한 배치로 (부분 생성 방지)
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO users (id, name, email, role, note, created_at) VALUES (?, ?, ?, ?, ?, ?)`).bind(id, name, str(input.email, 200), role, str(input.note, 500), at),
+    ...mems.map((m) => env.DB.prepare(`INSERT OR REPLACE INTO memberships (user_id, category_id, role, created_at) VALUES (?, ?, ?, ?)`).bind(id, m.category_id, m.role, at)),
+  ]);
   await logActivity(env, { actor_id: ctx.user.id, action: "user.create", target_id: id, summary: name, source: ctx.source });
   let token: string | undefined;
   let token_hint: string | undefined;
-  if (input.issue_token) {
+  if (bool(input.issue_token)) {
     const t = await issueToken(env, ctx, { user_id: id, label: "초기 발급" });
     token = t.token;
     token_hint = t.hint;
@@ -195,10 +204,11 @@ export async function updateUser(env: Env, ctx: AuthContext, id: string, input: 
     sets.push("note = ?");
     params.push(str(input.note, 500));
   }
-  if (input.disabled !== undefined) {
-    if (id === ctx.user.id && input.disabled) bad("자기 자신을 비활성화할 수 없습니다");
+  if (input.disabled !== undefined && input.disabled !== null) {
+    const off = bool(input.disabled);
+    if (id === ctx.user.id && off) bad("자기 자신을 비활성화할 수 없습니다");
     sets.push("disabled_at = ?");
-    params.push(input.disabled ? nowIso() : null);
+    params.push(off ? nowIso() : null);
   }
   if (sets.length) {
     params.push(id);
@@ -206,6 +216,7 @@ export async function updateUser(env: Env, ctx: AuthContext, id: string, input: 
   }
   if (input.categories !== undefined) {
     const mems = normMemberships(input.categories);
+    await assertCategoriesExist(env, mems);
     const at = nowIso();
     await env.DB.batch([
       env.DB.prepare(`DELETE FROM memberships WHERE user_id = ?`).bind(id),
@@ -282,6 +293,20 @@ export async function revokeToken(env: Env, ctx: AuthContext, id: string): Promi
 
 // ---------- 개요 / 활동 ----------
 
+/** SQLite date() 수정자: 타임존의 현재 UTC 오프셋 (예: '+540 minutes') */
+function tzModifier(tz: string): string {
+  try {
+    const now = new Date();
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour12: false, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(now);
+    const g = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0);
+    const local = Date.UTC(g("year"), g("month") - 1, g("day"), g("hour") % 24, g("minute"), g("second"));
+    const offsetMin = Math.round((local - now.getTime()) / 60000);
+    return `${offsetMin >= 0 ? "+" : "-"}${Math.abs(offsetMin)} minutes`;
+  } catch {
+    return "+0 minutes";
+  }
+}
+
 export async function overview(env: Env) {
   const tz = env.APP_TZ || "Asia/Seoul";
   const d7 = daysAgoIso(7);
@@ -317,8 +342,8 @@ export async function overview(env: Env) {
         (SELECT GROUP_CONCAT(c.name, ', ') FROM memberships m JOIN categories c ON c.id = m.category_id WHERE m.user_id = u.id) AS category_names
       FROM users u WHERE u.disabled_at IS NULL ORDER BY last_entry_at DESC`).bind(d7, d30),
     env.DB.prepare(`
-      SELECT date(a.at) AS day, COUNT(*) AS n FROM activity a WHERE a.at >= ? AND a.action IN ('entry.create','comment.create','stage.update','project.create')
-      GROUP BY day ORDER BY day`).bind(daysAgoIso(42)),
+      SELECT date(a.at, ?) AS day, COUNT(*) AS n FROM activity a WHERE a.at >= ? AND a.action IN ('entry.create','comment.create','stage.update','project.create')
+      GROUP BY day ORDER BY day`).bind(tzModifier(tz), daysAgoIso(42)),
     env.DB.prepare(`
       SELECT e.id, e.title, e.date, e.updated_at, e.stage, p.id AS project_id, p.title AS project_title, c.name AS category_name, u.name AS author_name
       FROM entries e JOIN projects p ON p.id = e.project_id JOIN categories c ON c.id = p.category_id JOIN users u ON u.id = e.author_id

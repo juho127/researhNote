@@ -183,9 +183,52 @@ const ts = Date.now().toString(36);
   const disMe = await api(OUT, "GET", "/api/me");
   ok("disabled user → 401", disMe.status === 401);
 
+  // 리뷰에서 나온 회귀 검사
+  const MEM2 = reissue.data.token;
+  const approvedEdit = await api(MEM2, "PATCH", `/api/entries/${e1Id}`, { content: "## 결과\n- 수정된 본문" });
+  ok("editing approved entry resets review to none", approvedEdit.status === 200 && approvedEdit.data.review_status === "none", JSON.stringify(approvedEdit.data).slice(0, 200));
+  const longQ = await api(MEM2, "GET", `/api/search?q=${encodeURIComponent("가나다라마바사아자차카타파하가나다라마바")}`);
+  ok("long korean search query → 200", longQ.status === 200, JSON.stringify(longQ.data).slice(0, 120));
+  const badCat = await api(ADMIN, "POST", "/api/admin/users", { name: `없는카테고리${ts}`, categories: ["no-such-category"] });
+  ok("user create with unknown category → 400", badCat.status === 400, JSON.stringify(badCat.data).slice(0, 120));
+  const longTitle = await api(MEM2, "POST", `/api/projects/${prjId}/entries`, { title: "x".repeat(201), content: "y" });
+  ok("title over 200 chars → 400", longTitle.status === 400);
+  const feb31 = await api(MEM2, "POST", `/api/projects/${prjId}/entries`, { title: "d", content: "y", date: "2026-02-31" });
+  ok("2026-02-31 rejected", feb31.status === 400);
+  const objTitle = await api(MEM2, "POST", `/api/projects/${prjId}/entries`, { title: { a: 1 }, content: "y" });
+  ok("object title → 400", objTitle.status === 400);
+  const spoof = await api(MEM2, "POST", `/api/projects/${prjId}/entries`, { title: "spoof", content: "y" }, "mcp");
+  ok("REST cannot spoof source=mcp", spoof.status === 201 && spoof.data.source === "api");
+  const mcpNotif = await fetch(BASE + "/mcp", { method: "POST", headers: { Authorization: `Bearer ${MEM2}`, "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", method: "tools/call", params: { name: "log_progress", arguments: { project_id: prjId, title: "notif", content: "x" } } }) });
+  ok("mcp id-less tools/call → 202 (not executed)", mcpNotif.status === 202);
+  const notifCheck = await api(MEM2, "GET", `/api/projects/${prjId}/entries?limit=50`);
+  ok("id-less tools/call created nothing", notifCheck.status === 200 && !notifCheck.data.some((e) => e.title === "notif"));
+  const badArgs = await mcp(MEM2, "tools/call", { name: "log_progress", arguments: { project_id: prjId, title: "no content" } });
+  ok("mcp missing required arg → isError", badArgs.data.result?.isError === true && badArgs.data.result.content[0].text.includes("content"));
+  const badType = await mcp(MEM2, "tools/call", { name: "update_stage", arguments: { project_id: prjId, stage: "experiment", set_current: "true" } });
+  ok("mcp wrong arg type → isError", badType.data.result?.isError === true);
+  const stageOnly = await api(MEM2, "PUT", `/api/projects/${prjId}/stages/writing`, { status: "doing" });
+  ok("stage doing without set_current keeps current stage", stageOnly.status === 200 && stageOnly.data.stage === "experiment");
+  const missingPrompt = await mcp(MEM2, "prompts/get", { name: "weekly_review", arguments: {} });
+  ok("prompt missing required arg → -32602", missingPrompt.data.error?.code === -32602);
+  const badEnc = await fetch(BASE + "/api/projects/%E0%A4%A", { headers: { Authorization: `Bearer ${MEM2}` } });
+  ok("bad percent-encoding → 400", badEnc.status === 400);
+  // 탈퇴자 차단
+  const rmMem = await api(ADMIN, "DELETE", `/api/admin/users/${memId}/memberships/${catId}`);
+  ok("admin removes membership", rmMem.status === 200);
+  const exEdit = await api(MEM2, "PATCH", `/api/entries/${e1Id}`, { title: "탈퇴 후 수정" });
+  ok("ex-member cannot edit own entry", exEdit.status === 403);
+  const exProj = await api(MEM2, "PATCH", `/api/projects/${prjId}`, { title: "탈퇴 후 수정" });
+  ok("ex-member cannot edit own project", exProj.status === 403);
+  const stillTitle = await api(ADMIN, "GET", `/api/entries/${e1Id}`);
+  ok("entry unchanged after ex-member attempt", stillTitle.data.title === "첫 실험");
+  await api(ADMIN, "PUT", `/api/admin/users/${memId}/memberships/${catId}`, { role: "member" });
+
   // 정리
   const arch = await api(ADMIN, "DELETE", `/api/projects/${prjId}`);
   ok("archive project", arch.status === 200);
+  const archivedWrite = await api(MEM2, "POST", `/api/projects/${prjId}/entries`, { title: "after archive", content: "x" });
+  ok("archived project rejects entries", archivedWrite.status === 403);
   const carch = await api(ADMIN, "PATCH", `/api/admin/categories/${catId}`, { archived: true });
   ok("archive category", carch.status === 200);
   void leadId;

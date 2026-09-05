@@ -62,11 +62,26 @@ export async function readJson<T = Record<string, unknown>>(request: Request, ma
   }
 }
 
-/** 문자열 필드 정규화: trim + 길이 제한. 없으면 fallback. */
+/** 문자열 필드 정규화: trim + 길이 제한(초과분은 잘라냄). 없으면 fallback. 객체/배열은 거부. */
 export function str(v: unknown, max = 500, fallback = ""): string {
   if (v === undefined || v === null) return fallback;
+  if (typeof v === "object") bad("문자열이어야 하는 필드에 객체/배열이 들어왔습니다");
   const s = String(v).trim();
   return s.length > max ? s.slice(0, max) : s;
+}
+
+/** 길이 제한을 넘으면 잘라내지 않고 400 (본문·제목처럼 조용히 잘리면 안 되는 필드용) */
+export function strLimited(v: unknown, max: number, name: string, fallback = ""): string {
+  if (v === undefined || v === null) return fallback;
+  if (typeof v === "object") bad(`${name} 은(는) 문자열이어야 합니다`);
+  const s = String(v).trim();
+  if (s.length > max) bad(`${name} 이(가) 최대 길이 ${max.toLocaleString()}자를 넘습니다 (${s.length.toLocaleString()}자)`);
+  return s;
+}
+
+/** 불리언 플래그: true/"true"/1/"1" 만 참. "false" 문자열은 거짓. */
+export function bool(v: unknown): boolean {
+  return v === true || v === 1 || v === "true" || v === "1";
 }
 
 export function optStr(v: unknown, max = 500): string | undefined {
@@ -75,7 +90,10 @@ export function optStr(v: unknown, max = 500): string | undefined {
 }
 
 export function isDateStr(v: unknown): v is string {
-  return typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v + "T00:00:00Z"));
+  if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const d = new Date(v + "T00:00:00Z");
+  // 2026-02-31 같은 존재하지 않는 날짜는 Date 가 정규화하므로 왕복 비교로 거른다
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
 }
 
 export function oneOf<T extends string>(v: unknown, allowed: readonly T[], name: string): T {
